@@ -1,0 +1,44 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Claude Code internals
+.claude/
+docs/superpowers/
+
+# Personal / planning docs (kept locally, not in repo)
+Crossbot Outline.md
+Crossplay vs Scrabble*
+
+# Dictionary (NWL23 is a licensed word list — obtain separately)
+data/dictionary/
+
+# Runtime / debug output
+data/debug/
+data/game_state.json
+data/calibration/live_screenshot.png
+tools/accessibility_dump.xml
+
+# Debug screenshots at root (device-specific captures)
+AfterTilePlaced.PNG
+AllTiles.PNG
+BeforeTilePlaced.PNG
+connection_test.png
+TestRun.PNG
