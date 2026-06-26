@@ -16,7 +16,10 @@ the device config (the board/rack geometry and taps then share one coordinate
 space).
 """
 import time
-from xml.etree import ElementTree
+
+import numpy as np
+import pytesseract
+from PIL import Image
 
 from crossplay.client.base import CrossplayClient, Observation
 from crossplay.client.device_config import DeviceConfig
@@ -28,11 +31,10 @@ from crossplay.vision.android_vision import parse_board_and_rack
 
 CAL_PATH = "data/calibration/calibration.json"
 
-# TODO(device): confirm against tools/android_dump.py output.
-_TURN_KEYWORDS = ("play", "submit")
-_PASS_KEYWORDS = ("pass", "skip")
-_MORE_KEYWORDS = ("more", "options", "menu")
-_OVER_KEYWORDS = ("game over", "rematch", "final", "you won", "you lost")
+# The Compose app exposes no accessibility text, so turn state is read by OCR'ing
+# the action button: "Play" (our turn) vs "Their Turn". Game-over screens swap it
+# for a rematch/play-again control.
+_OVER_KEYWORDS = ("rematch", "game over", "play again")
 
 
 class AndroidClient(CrossplayClient):
@@ -60,44 +62,68 @@ class AndroidClient(CrossplayClient):
     def _session(self):
         return self._driver.session
 
-    # ── Hierarchy helpers ─────────────────────────────────────────────────────
+    # ── Screen helpers ─────────────────────────────────────────────────────────
 
-    def _nodes(self):
-        return ElementTree.fromstring(self._session.page_source).iter("node")
-
-    def _find_tappable(self, keywords) -> tuple[int, int] | None:
-        """Center (device px) of the first clickable node whose label matches."""
-        from crossplay.vision.android_board import _parse_bounds
-        for node in self._nodes():
-            label = (node.get("text", "") + " " + node.get("content-desc", "")).lower()
-            if any(k in label for k in keywords):
-                b = _parse_bounds(node.get("bounds", ""))
-                if b:
-                    x, y, w, h = b
-                    return x + w // 2, y + h // 2
-        return None
+    def _zoom_out(self) -> None:
+        """Pinch the board back to full view (it zooms in while placing tiles)."""
+        try:
+            self._session.execute_script("mobile: pinchCloseGesture", {
+                "left": self._cal.board_x, "top": self._cal.board_y,
+                "width": self._cal.board_width, "height": self._cal.board_height,
+                "percent": 0.75,
+            })
+            time.sleep(0.4)
+        except Exception:
+            pass
 
     def _read(self):
-        """Screenshot → (board, rack, rack_positions) via OCR."""
+        """Zoom to full board, screenshot, OCR → (board, rack, rack_positions)."""
+        self._zoom_out()
         img = capture_screenshot(self._session)
         return parse_board_and_rack(img, self._cal, self._dev.rack_cells)
 
+    def _button_text(self) -> str:
+        """OCR the action button (Play / Their Turn / Rematch …), lowercased."""
+        img = capture_screenshot(self._session)
+        sx, sy = self._dev.submit
+        crop = img[max(0, sy - 68):sy + 42, max(0, sx - 260):sx + 260]
+        if crop.size == 0:
+            return ""
+        g = Image.fromarray(crop).convert("L")
+        g = g.resize((g.width * 2, g.height * 2))
+        return pytesseract.image_to_string(g, config="--psm 7").strip().lower()
+
+    def _select_blank_letter(self, letter: str) -> bool:
+        """Tap `letter` in the 'Choose a letter' popup shown after placing a blank.
+
+        The popup is a 7-wide alphabetical grid of bright-blue buttons over a dimmed
+        board; detect the bright-blue cluster's bounding box and index by position.
+        Short rows (V–Z) are centre-aligned, so offset partial rows.
+        """
+        img = capture_screenshot(self._session)
+        r, g, b = img[:, :, 0].astype(int), img[:, :, 1].astype(int), img[:, :, 2].astype(int)
+        bright = (b > 180) & (g > 90) & (g < 190) & (r < 120) & (b - r > 80)
+        ys, xs = np.where(bright)
+        if len(xs) < 500:
+            print(f"  [!] blank-letter popup not found (can't assign {letter!r})")
+            return False
+        x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
+        cw, ch = (x1 - x0) / 7, (y1 - y0) / 4
+        idx = ord(letter.upper()) - 65
+        row, col = idx // 7, idx % 7
+        offset = (7 - min(7, 26 - row * 7)) / 2     # centre short rows
+        cx = int(x0 + (offset + col + 0.5) * cw)
+        cy = int(y0 + (row + 0.5) * ch)
+        tap(self._session, cx, cy)
+        time.sleep(0.6)
+        return True
+
     def _is_our_turn(self) -> bool:
-        # Compose app exposes no turn indicator in the tree; heuristic: it's our
-        # move when the rack has tiles to play. TODO(device): tighten if needed.
-        _, rack, _ = self._read()
-        return any(t is not None for t in rack)
+        text = self._button_text()
+        return "play" in text and "their" not in text
 
     def _game_is_over(self) -> bool:
-        # TODO(device): detect the end-of-game screen (no reliable text in the
-        # Compose tree — likely a screenshot/region check).
-        return False
-
-    def _keepalive_tap(self) -> None:
-        try:
-            tap(self._session, *self._dev.keepalive)
-        except Exception:
-            pass
+        return any(k in self._button_text() for k in _OVER_KEYWORDS)
 
     # ── Interface ─────────────────────────────────────────────────────────────
 
@@ -105,7 +131,6 @@ class AndroidClient(CrossplayClient):
         print("Waiting for our turn...", end="", flush=True)
         deadline = time.time() + timeout
         while time.time() < deadline:
-            self._keepalive_tap()
             try:
                 if self._is_our_turn():
                     print(" our turn.")
@@ -113,7 +138,7 @@ class AndroidClient(CrossplayClient):
             except Exception:
                 pass
             print(".", end="", flush=True)
-            time.sleep(2.0)
+            time.sleep(2.5)
         print(" timed out.")
         return False
 
@@ -124,24 +149,19 @@ class AndroidClient(CrossplayClient):
         return Observation(
             board=board,
             rack=rack_letters,
-            is_our_turn=any(t is not None for t in rack_letters),
+            is_our_turn=self._is_our_turn(),
             game_over=self._game_is_over(),
         )
 
     def play_move(self, move: dict) -> bool:
         ok = self._execute_move(move)
         if ok:
-            target = self._find_tappable(_TURN_KEYWORDS) or self._dev.submit
-            tap(self._session, *target)
+            tap(self._session, *self._dev.submit)
         return ok
 
     def pass_turn(self) -> None:
-        more = self._find_tappable(_MORE_KEYWORDS) or self._dev.more
-        tap(self._session, *more)
-        time.sleep(1.0)
-        pass_btn = self._find_tappable(_PASS_KEYWORDS)
-        if pass_btn:
-            tap(self._session, *pass_btn)
+        # TODO(device): confirm the More→Pass flow on Android (capture via android_dump).
+        tap(self._session, *self._dev.more)
 
     # ── Move execution ─────────────────────────────────────────────────────────
 
@@ -176,9 +196,12 @@ class AndroidClient(CrossplayClient):
             target_r = row if horizontal else row + idx
             target_c = col + idx if horizontal else col
             bx, by = self._cal.cell_center_pixel(target_r, target_c)
+            # The board zooms in as tiles are placed, which drifts later targets;
+            # reset to full view before every drag so calibration stays valid.
+            self._zoom_out()
             drag_and_drop(self._session, rack_x, rack_y, bx // scale, by // scale)
-            time.sleep(0.5)
+            time.sleep(0.6)
             if is_blank:
-                pass  # TODO(device): handle Android blank-letter selection popup
+                self._select_blank_letter(letter)
             time.sleep(0.4)
         return True
