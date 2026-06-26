@@ -150,7 +150,14 @@ class AndroidClient(CrossplayClient):
         return False
 
     def observe(self) -> Observation:
-        board, rack_letters, rack_positions = self._read()
+        # A completely empty read mid-game means a transient/zooming frame, not a
+        # real state (the board always has tiles after the opening). Retry rather
+        # than acting on it — this is what cascaded into a bad pass previously.
+        for _ in range(3):
+            board, rack_letters, rack_positions = self._read()
+            if any(any(row) for row in board) or any(rack_letters):
+                break
+            time.sleep(1.5)
         self._rack_letters = rack_letters
         self._rack_positions = rack_positions
         return Observation(
