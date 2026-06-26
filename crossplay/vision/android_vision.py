@@ -38,14 +38,26 @@ def _ocr_letter(crop: np.ndarray) -> str:
     if num <= 1:
         return '?'   # no letter (e.g. a blank tile)
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    _, _, w, h, _ = stats[largest]
+    aspect = w / max(1, h)
     letter = (labels == largest).astype(np.uint8) * 255
     img = Image.fromarray(255 - letter)
     img = img.resize((max(1, img.width * 3), max(1, img.height * 3)))
+
+    result = '?'
     for psm in (10, 8):
         text = pytesseract.image_to_string(img, config=f"--psm {psm} {_WHITELIST}").strip()
         if text:
-            return text[:1]
-    return '?'
+            result = text[:1]
+            break
+
+    # I vs L is the one confusable narrow pair: L has a foot (wide aspect ~0.7),
+    # I is a uniform thin bar (~0.23). Decide by shape, not tesseract's guess.
+    if result in ('I', 'L'):
+        result = 'I' if aspect < 0.45 else 'L'
+    elif result == '?' and aspect < 0.35:
+        result = 'I'   # a lone thin bar tesseract failed on is almost always I
+    return result
 
 
 def _crop(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, inset: float = 0.12) -> np.ndarray:

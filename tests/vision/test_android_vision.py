@@ -6,7 +6,29 @@ cells, since that's the part that's pure logic and easy to regress.
 """
 import numpy as np
 
-from crossplay.vision.android_vision import _has_tile
+from crossplay.vision.android_vision import _has_tile, _ocr_letter
+
+
+def _tile(rgb=(70, 95, 180)):
+    img = np.zeros((60, 60, 3), dtype=np.uint8)
+    img[:, :] = rgb
+    return img
+
+
+def test_thin_bar_reads_as_I_not_L():
+    # A uniform thin vertical bar must resolve to I — this was misread as L,
+    # which corrupted move generation. Shape (aspect) decides, not tesseract.
+    crop = _tile()
+    crop[8:52, 27:33] = 255          # 6 wide x 44 tall → aspect ~0.14
+    assert _ocr_letter(crop) == "I"
+
+
+def test_foot_shape_reads_as_L():
+    # Vertical stroke + bottom foot → L (wide aspect).
+    crop = _tile()
+    crop[8:52, 22:28] = 255          # vertical stroke
+    crop[46:52, 22:44] = 255         # bottom foot
+    assert _ocr_letter(crop) == "L"
 
 
 def _fill(rgb):

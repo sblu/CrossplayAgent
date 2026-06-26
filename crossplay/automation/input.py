@@ -26,6 +26,19 @@ def drag_and_drop(driver, start_x: int, start_y: int, end_x: int, end_y: int, du
     actions.perform()
 
 
+def android_drag(driver, start_x: int, start_y: int, end_x: int, end_y: int, speed: int = 900):
+    """Native UiAutomator2 drag (press → hold → smooth drag → release).
+
+    More reliable than the W3C pointer drag for app drag-and-drop: a too-fast W3C
+    drag can read as a tap, so a rack tile gets "tapped" (auto-placed / bounced)
+    rather than dragged. `speed` is px/sec — lower drags more deliberately.
+    """
+    driver.execute_script("mobile: dragGesture", {
+        "startX": int(start_x), "startY": int(start_y),
+        "endX": int(end_x), "endY": int(end_y), "speed": int(speed),
+    })
+
+
 def zoom_out_board(driver):
     """Pinch the ZoomAndPanForwardingView scroll view back to full-board zoom.
 
