@@ -22,8 +22,9 @@ from crossplay.client.base import CrossplayClient, Observation
 from crossplay.client.device_config import DeviceConfig
 from crossplay.automation.android_driver import AndroidDriver
 from crossplay.automation.input import tap, drag_and_drop
+from crossplay.automation.screenshot import capture_screenshot
 from crossplay.vision.calibration import Calibration
-from crossplay.vision.android_board import parse_board_and_rack
+from crossplay.vision.android_vision import parse_board_and_rack
 
 CAL_PATH = "data/calibration/calibration.json"
 
@@ -76,16 +77,21 @@ class AndroidClient(CrossplayClient):
                     return x + w // 2, y + h // 2
         return None
 
+    def _read(self):
+        """Screenshot → (board, rack, rack_positions) via OCR."""
+        img = capture_screenshot(self._session)
+        return parse_board_and_rack(img, self._cal, self._dev.rack_cells)
+
     def _is_our_turn(self) -> bool:
-        for node in self._nodes():
-            label = (node.get("text", "") + " " + node.get("content-desc", "")).lower()
-            if any(k in label for k in _TURN_KEYWORDS):
-                return node.get("enabled", "true").lower() == "true"
-        return False
+        # Compose app exposes no turn indicator in the tree; heuristic: it's our
+        # move when the rack has tiles to play. TODO(device): tighten if needed.
+        _, rack, _ = self._read()
+        return any(t is not None for t in rack)
 
     def _game_is_over(self) -> bool:
-        src = self._session.page_source.lower()
-        return any(k in src for k in _OVER_KEYWORDS)
+        # TODO(device): detect the end-of-game screen (no reliable text in the
+        # Compose tree — likely a screenshot/region check).
+        return False
 
     def _keepalive_tap(self) -> None:
         try:
@@ -112,17 +118,14 @@ class AndroidClient(CrossplayClient):
         return False
 
     def observe(self) -> Observation:
-        game_over = self._game_is_over()
-        board, rack_letters, rack_positions = parse_board_and_rack(
-            self._session.page_source, self._cal, self._dev.rack_cells,
-        )
+        board, rack_letters, rack_positions = self._read()
         self._rack_letters = rack_letters
         self._rack_positions = rack_positions
         return Observation(
             board=board,
             rack=rack_letters,
-            is_our_turn=not game_over,
-            game_over=game_over,
+            is_our_turn=any(t is not None for t in rack_letters),
+            game_over=self._game_is_over(),
         )
 
     def play_move(self, move: dict) -> bool:

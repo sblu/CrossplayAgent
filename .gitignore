@@ -35,6 +35,7 @@ data/debug/
 data/game_state.json
 data/calibration/live_screenshot.png
 tools/accessibility_dump.xml
+tools/android_dump.xml
 
 # Self-play logs / training data (generated)
 *.jsonl
@@ -42,6 +43,9 @@ tools/accessibility_dump.xml
 # Leaderboard ratings store + generated report
 data/leaderboard.json
 data/leaderboard.html
+
+# Android working/debug screenshots (device-specific captures)
+data/calibration/android_*.png
 
 # Debug screenshots at root (device-specific captures)
 AfterTilePlaced.PNG
