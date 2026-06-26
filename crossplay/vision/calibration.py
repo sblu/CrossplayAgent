@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 
 
@@ -31,4 +31,12 @@ class Calibration:
     @classmethod
     def load(cls, path: str | Path) -> "Calibration":
         data = json.loads(Path(path).read_text())
-        return cls(**data)
+        # Tolerate extra keys: the same file also holds device tap config
+        # (pixel_scale, rack_cells, buttons) consumed by DeviceConfig.
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    def save_merged(self, path: str | Path):
+        """Write board-geometry fields without clobbering other keys in the file."""
+        from crossplay.client.device_config import update_calibration_file
+        update_calibration_file(path, **asdict(self))

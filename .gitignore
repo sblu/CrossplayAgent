@@ -36,6 +36,13 @@ data/game_state.json
 data/calibration/live_screenshot.png
 tools/accessibility_dump.xml
 
+# Self-play logs / training data (generated)
+*.jsonl
+
+# Leaderboard ratings store + generated report
+data/leaderboard.json
+data/leaderboard.html
+
 # Debug screenshots at root (device-specific captures)
 AfterTilePlaced.PNG
 AllTiles.PNG
