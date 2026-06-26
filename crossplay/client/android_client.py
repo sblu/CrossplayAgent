@@ -24,7 +24,7 @@ from PIL import Image
 from crossplay.client.base import CrossplayClient, Observation
 from crossplay.client.device_config import DeviceConfig
 from crossplay.automation.android_driver import AndroidDriver
-from crossplay.automation.input import tap, android_drag
+from crossplay.automation.input import tap, drag_and_drop
 from crossplay.automation.screenshot import capture_screenshot
 from crossplay.vision.calibration import Calibration
 from crossplay.vision.android_vision import parse_board_and_rack
@@ -224,7 +224,7 @@ class AndroidClient(CrossplayClient):
             # The board zooms in as tiles are placed, which drifts later targets;
             # reset to full view before every drag so calibration stays valid.
             self._zoom_out()
-            android_drag(self._session, rack_x, rack_y, bx // scale, by // scale)
+            drag_and_drop(self._session, rack_x, rack_y, bx // scale, by // scale, duration_ms=800)
             time.sleep(0.6)
             if is_blank:
                 self._select_blank_letter(letter)
