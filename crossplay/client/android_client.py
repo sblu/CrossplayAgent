@@ -118,6 +118,13 @@ class AndroidClient(CrossplayClient):
         time.sleep(0.6)
         return True
 
+    def _play_enabled(self) -> bool:
+        """True when the Play button is dark (a valid move is staged)."""
+        img = capture_screenshot(self._session)
+        sx, sy = self._dev.submit
+        crop = img[max(0, sy - 40):sy + 40, max(0, sx - 120):sx + 120]
+        return crop.size > 0 and crop.reshape(-1, 3).mean() < 110
+
     def _is_our_turn(self) -> bool:
         text = self._button_text()
         return "play" in text and "their" not in text
@@ -154,10 +161,21 @@ class AndroidClient(CrossplayClient):
         )
 
     def play_move(self, move: dict) -> bool:
-        ok = self._execute_move(move)
-        if ok:
-            tap(self._session, *self._dev.submit)
-        return ok
+        if not self._execute_move(move):
+            return False
+        # Wait for the board to register a valid staged move (Play goes dark).
+        deadline = time.time() + 6
+        while time.time() < deadline and not self._play_enabled():
+            time.sleep(0.5)
+        tap(self._session, *self._dev.submit)
+        # Wait for the move to be accepted and the turn to pass, so the next
+        # wait_for_turn doesn't catch a stale "Play" and read a transitioning board.
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            time.sleep(1.0)
+            if "play" not in self._button_text():
+                break
+        return True
 
     def pass_turn(self) -> None:
         # TODO(device): confirm the More→Pass flow on Android (capture via android_dump).

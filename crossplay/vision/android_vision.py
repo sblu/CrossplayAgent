@@ -13,11 +13,12 @@ letter, so OCR yields '?', exactly what the engine expects.
 Tuned against a real Pixel 10 Pro XL screenshot (1080x2404). Geometry comes from the
 calibrated DeviceConfig, so it adapts to other devices.
 """
+import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
 
-_OCR_CONFIG = "--psm 10 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_WHITELIST = "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 def _has_tile(crop: np.ndarray) -> bool:
@@ -30,13 +31,21 @@ def _has_tile(crop: np.ndarray) -> bool:
 
 
 def _ocr_letter(crop: np.ndarray) -> str:
-    # Isolate the white letter, then blank the top-right corner (point value).
-    mask = (np.all(crop > 150, axis=2).astype(np.uint8)) * 255
-    h, w = mask.shape
-    mask[: int(h * 0.34), int(w * 0.55):] = 0
-    img = Image.fromarray(255 - mask).resize((max(1, w * 3), max(1, h * 3)))
-    text = pytesseract.image_to_string(img, config=_OCR_CONFIG).strip()
-    return text[:1] if text else '?'
+    # Keep only the largest white blob (the letter) and drop the small point-value
+    # digit — far more robust than masking a fixed corner, which clipped P/B/L.
+    mask = np.all(crop > 150, axis=2).astype(np.uint8)
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num <= 1:
+        return '?'   # no letter (e.g. a blank tile)
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    letter = (labels == largest).astype(np.uint8) * 255
+    img = Image.fromarray(255 - letter)
+    img = img.resize((max(1, img.width * 3), max(1, img.height * 3)))
+    for psm in (10, 8):
+        text = pytesseract.image_to_string(img, config=f"--psm {psm} {_WHITELIST}").strip()
+        if text:
+            return text[:1]
+    return '?'
 
 
 def _crop(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, inset: float = 0.12) -> np.ndarray:

@@ -41,6 +41,7 @@ def run(
     agent: Agent,
     *,
     max_timeouts: int = 3,
+    max_moves: int | None = None,
     write_dashboard: bool = True,
     verbose: bool = True,
 ) -> None:
@@ -48,6 +49,7 @@ def run(
         if verbose:
             print("Connected. Starting game loop...")
         consecutive_timeouts = 0
+        moves_played = 0
 
         while True:
             if not client.wait_for_turn():
@@ -94,3 +96,9 @@ def run(
                     _write_dashboard(obs.board, obs.rack, move if ok else {"action": "pass"})
                 if not ok and verbose:
                     print("Move execution failed.")
+
+            moves_played += 1
+            if max_moves is not None and moves_played >= max_moves:
+                if verbose:
+                    print(f"Reached max_moves ({max_moves}) — stopping.")
+                break
