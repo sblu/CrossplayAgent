@@ -72,6 +72,7 @@ _DOC_ORDER = [
     "getting-started",
     "adding-an-algorithm",
     "architecture/device-abstraction",
+    "architecture/strategy-roadmap",
     "architecture/android-setup",
     "architecture/ios-setup",
 ]
