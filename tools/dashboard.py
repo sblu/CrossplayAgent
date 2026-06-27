@@ -11,6 +11,7 @@ Hosts, on a single port:
     open http://localhost:8765
 """
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -1359,6 +1360,19 @@ def main():
         return jsonify({"ok": False, "error": "unknown action"}), 400
 
     mount_device_tools(app)
+
+    # The dashboard owns the bot child's lifecycle: stop it cleanly when the
+    # dashboard exits so its Appium session is never orphaned. atexit covers
+    # normal exit and Ctrl-C (KeyboardInterrupt unwinds to a clean exit); the
+    # SIGTERM handler covers `kill <pid>`, which would otherwise skip atexit.
+    # (_stop_bot is a no-op if no bot is running, so this is always safe.)
+    atexit.register(_stop_bot)
+
+    def _graceful_shutdown(signum, frame):
+        _stop_bot()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
 
     print(f"Dashboard at http://localhost:{args.port}   ({args.a} vs {args.b})")
     app.run(host="127.0.0.1", port=args.port, threaded=True)
