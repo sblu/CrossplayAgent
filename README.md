@@ -58,7 +58,8 @@ The dashboard renders these in the browser at **/docs**, or read them here:
   development loop.
 - **[Adding an Algorithm](docs/adding-an-algorithm.md)** — the `Agent` contract,
   the `agents.json → registry → class` chain, and a worked example.
-- **[Device abstraction — design](docs/architecture/device-abstraction.md)** and
+- **[Device abstraction — design](docs/architecture/device-abstraction.md)**,
+  **[iOS setup](docs/architecture/ios-setup.md)**, and
   **[Android setup](docs/architecture/android-setup.md)**.
 
 ## How it fits together

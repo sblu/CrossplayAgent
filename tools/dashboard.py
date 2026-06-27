@@ -65,6 +65,24 @@ def _doc_title(path: Path) -> str:
         pass
     return path.stem.replace("-", " ").title()
 
+
+# Reading order for the /docs index — slugs listed here sort first, in this order;
+# anything not listed falls back to alphabetical after them.
+_DOC_ORDER = [
+    "getting-started",
+    "adding-an-algorithm",
+    "architecture/device-abstraction",
+    "architecture/android-setup",
+    "architecture/ios-setup",
+]
+
+
+def _doc_sort_key(slug: str):
+    try:
+        return (0, _DOC_ORDER.index(slug))
+    except ValueError:
+        return (1, slug)
+
 # Bot subprocess control — the live view can start/stop the Android game loop.
 _bot = {"proc": None}
 
@@ -1163,6 +1181,8 @@ def main():
             group = ("Guides" if "/" not in slug
                      else slug.split("/")[0].replace("-", " ").title())
             groups.setdefault(group, []).append({"slug": slug, "title": _doc_title(p)})
+        for docs in groups.values():       # explicit reading order within each group
+            docs.sort(key=lambda d: _doc_sort_key(d["slug"]))
         ordered = {}                       # Guides first, then sub-folders A→Z
         if "Guides" in groups:
             ordered["Guides"] = groups.pop("Guides")

@@ -133,6 +133,7 @@ you need:
 - a `.env` with `ANDROID_DEVICE_UDID`, `ANDROID_APP_PACKAGE`, `APPIUM_HOST`, `APPIUM_PORT`
 
 ### iOS (macOS only)
+Full instructions: **[iOS setup](architecture/ios-setup.md)**. In short you need:
 - **Xcode** running **WebDriverAgent** on the device
 - a `.env` with `DEVICE_UDID`, `BUNDLE_ID`, `WDA_URL`, `APPIUM_HOST`, `APPIUM_PORT`
 - verify with `python verify_connection.py`
