@@ -6,14 +6,30 @@ cells, since that's the part that's pure logic and easy to regress.
 """
 import numpy as np
 
+from crossplay.vision import android_vision
 from crossplay.vision.android_vision import (
-    _detect_rack_tiles, _has_tile, _ocr_letter, find_modal_close)
+    _bottom_bar_coverage, _detect_rack_tiles, _has_tile, _ocr_letter,
+    find_modal_close)
 
 
 def _tile(rgb=(70, 95, 180)):
     img = np.zeros((60, 60, 3), dtype=np.uint8)
     img[:, :] = rgb
     return img
+
+
+def _ef_glyph(crop, *, bottom_bar):
+    """Draw a white E (bottom_bar=True) or F (False) onto a blue tile crop.
+
+    E and F are identical apart from the bottom stroke — the exact ambiguity the
+    discriminator resolves.
+    """
+    crop[8:52, 18:24] = 255          # left stem
+    crop[8:14, 18:44] = 255          # top bar
+    crop[27:33, 18:40] = 255         # middle bar
+    if bottom_bar:
+        crop[46:52, 18:44] = 255     # bottom bar (E only)
+    return crop
 
 
 def test_thin_bar_reads_as_I_not_L():
@@ -88,6 +104,35 @@ def test_centered_partial_rack_detected_by_position():
     xs = sorted(p[0] for p in positions)
     for got, want in zip(xs, centers):
         assert abs(got - want) <= 20
+
+
+def test_bottom_bar_coverage_separates_e_from_f():
+    # The pure-geometry discriminator: an E's bottom band is inked across nearly
+    # every column; an F's holds only the left stem.
+    e = _ef_glyph(_tile(), bottom_bar=True)
+    f = _ef_glyph(_tile(), bottom_bar=False)
+    # Extract just the white letter mask (drop the blue background) for each.
+    e_mask = np.all(e > 150, axis=2).astype(np.uint8)
+    f_mask = np.all(f > 150, axis=2).astype(np.uint8)
+    e_cov = _bottom_bar_coverage(e_mask[8:52, 18:44])
+    f_cov = _bottom_bar_coverage(f_mask[8:52, 18:44])
+    assert e_cov > 0.5 > f_cov
+
+
+def test_e_glyph_misread_as_f_is_corrected(monkeypatch):
+    # The reported bug: tesseract drops E's bottom stroke and returns 'F'. The
+    # bottom-bar check must override that back to 'E' for a glyph that has the bar.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "F")
+    assert _ocr_letter(_ef_glyph(_tile(), bottom_bar=True)) == "E"
+
+
+def test_real_f_not_flipped_to_e(monkeypatch):
+    # Inverse guard: a genuine F (no bottom bar) stays F even if tesseract says 'E',
+    # so the discriminator doesn't over-correct.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "E")
+    assert _ocr_letter(_ef_glyph(_tile(), bottom_bar=False)) == "F"
 
 
 def _fill(rgb):

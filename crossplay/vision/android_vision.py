@@ -30,6 +30,23 @@ def _has_tile(crop: np.ndarray) -> bool:
     return royal > 0.5
 
 
+def _bottom_bar_coverage(glyph: np.ndarray) -> float:
+    """Fraction of columns whose bottom band carries letter ink.
+
+    E and F are identical except for E's bottom horizontal stroke, so this is the
+    one feature that tells them apart: across the bottom ~22% of the glyph's
+    bounding box, an E's bottom bar inks nearly every column (~1.0) while an F has
+    only its left stem there (~0.2). `glyph` is the binary (0/1) letter mask.
+    """
+    h, w = glyph.shape
+    if h == 0 or w == 0:
+        return 0.0
+    band = glyph[int(h * 0.78):, :]
+    if band.size == 0:
+        return 0.0
+    return float((band.sum(axis=0) > 0).mean())
+
+
 def _ocr_letter(crop: np.ndarray) -> str:
     # Keep only the largest white blob (the letter) and drop the small point-value
     # digit — far more robust than masking a fixed corner, which clipped P/B/L.
@@ -38,14 +55,14 @@ def _ocr_letter(crop: np.ndarray) -> str:
     if num <= 1:
         return '?'   # no letter (e.g. a blank tile)
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    _, _, w, h, _ = stats[largest]
+    bx, by, w, h, _ = stats[largest]
     # A real letter spans ~56% of the tile height; a blank tile has no letter, only
     # a small mark/point-value (~27%). A short biggest-blob means a blank → '?'.
     if h < 0.40 * crop.shape[0]:
         return '?'
     aspect = w / max(1, h)
-    letter = (labels == largest).astype(np.uint8) * 255
-    img = Image.fromarray(255 - letter)
+    blob = (labels == largest).astype(np.uint8)
+    img = Image.fromarray(255 - blob * 255)
     img = img.resize((max(1, img.width * 3), max(1, img.height * 3)))
 
     result = '?'
@@ -63,6 +80,11 @@ def _ocr_letter(crop: np.ndarray) -> str:
         result = 'I'
     elif result in ('I', 'L'):
         result = 'I' if aspect < 0.48 else 'L'
+    # E vs F: tesseract routinely drops E's bottom stroke and reads it as F. They
+    # differ only there, so decide by the bottom bar rather than trust the glyph.
+    elif result in ('E', 'F'):
+        glyph = blob[by:by + h, bx:bx + w]
+        result = 'E' if _bottom_bar_coverage(glyph) > 0.5 else 'F'
     return result
 
 
