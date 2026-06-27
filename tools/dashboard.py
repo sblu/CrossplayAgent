@@ -465,9 +465,17 @@ _DEVICE_LIVE_HTML = r"""<!doctype html>
   .cfg .file { font-family: ui-monospace, Menlo, monospace; color: #3f5bb0;
                background: #f4f4ef; border-radius: 5px; padding: .15rem .4rem; }
   .cfg table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
-  .cfg td { padding: .2rem .3rem; border-top: 1px solid #f0f0ea; vertical-align: top; }
+  .cfg td { padding: .35rem .3rem; border-top: 1px solid #f0f0ea; vertical-align: top; }
   .cfg td.k { color: #888; white-space: nowrap; width: 1%; padding-right: 1rem; }
   .cfg code { font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
+  .cfg select { font: inherit; font-size: .82rem; padding: 4px 7px; border-radius: 6px;
+                border: 1px solid #ccd; background: #fff; max-width: 100%; }
+  .cfg .algo-desc { color: #666; font-size: .78rem; margin: .3rem 0 .15rem; }
+  .cfg .algo-file { font-size: .78rem; color: #999; }
+  .cfg .btns { display: flex; flex-wrap: wrap; gap: .25rem .5rem; }
+  .cfg .btns .b { font-family: ui-monospace, Menlo, monospace; font-size: .78rem;
+                  white-space: nowrap; color: #444; background: #f4f4ef;
+                  border-radius: 5px; padding: .1rem .4rem; }
 </style>
 </head>
 <body>
@@ -667,16 +675,20 @@ function renderConfig(c) {
     return;
   }
   const b = c.board || {};
+  const algos = c.algorithms || [];
   const btns = Object.entries(c.buttons || {})
-    .map(([k, v]) => `${k}: [${v}]`).join(", ");
+    .map(([k, v]) => `<span class="b">${k} [${v}]</span>`).join("");
   const plat = c.platform
     ? c.platform.charAt(0).toUpperCase() + c.platform.slice(1)
     : "Unknown";
   const platNote = c.platform_source === "inferred" ? " (inferred from environment)"
                  : c.platform_source === "unknown" ? " — set it in Device Setup" : "";
-  const opts = (c.algorithms || []).map(a =>
+  // Dropdown holds just the profile names; the selected profile's description sits
+  // on its own line below so the row never has to word-wrap a long option.
+  const opts = algos.map(a =>
     `<option value="${a.name}"${a.name === c.algorithm ? " selected" : ""}>` +
-    `${a.name}${a.description ? " — " + a.description : ""}</option>`).join("");
+    `${a.name}</option>`).join("");
+  const descOf = name => (algos.find(a => a.name === name) || {}).description || "";
   body.innerHTML =
     `Stored in <span class="file">${c.path}</span>` +
     `<table>` +
@@ -684,19 +696,21 @@ function renderConfig(c) {
       `<span style="color:#999">${platNote}</span></td></tr>` +
     `<tr><td class="k">algorithm</td><td>` +
       `<select id="algoSel">${opts}</select> ` +
-      `<span id="algoMsg" style="color:#2faa6a"></span><br>` +
-      `<span style="color:#999">defined in </span>` +
-      `<span class="file">${c.agents_file || "data/agents.json"}</span></td></tr>` +
+      `<span id="algoMsg" style="color:#2faa6a"></span>` +
+      `<div class="algo-desc" id="algoDesc">${descOf(c.algorithm)}</div>` +
+      `<div class="algo-file">defined in ` +
+      `<span class="file">${c.agents_file || "data/agents.json"}</span></div></td></tr>` +
     `<tr><td class="k">pixel scale</td><td><code>${c.pixel_scale}</code></td></tr>` +
     `<tr><td class="k">board</td><td><code>x ${b.board_x}, y ${b.board_y}, ` +
       `${b.board_width}×${b.board_height}, grid ${b.grid_size}</code></td></tr>` +
     `<tr><td class="k">rack cells</td><td><code>${(c.rack_cells||[]).length} cells</code></td></tr>` +
-    `<tr><td class="k">buttons</td><td><code>${btns}</code></td></tr>` +
+    `<tr><td class="k">buttons</td><td class="btns">${btns}</td></tr>` +
     `</table>`;
 
   const sel = document.getElementById("algoSel");
   if (sel) sel.addEventListener("change", () => {
     const algoMsg = document.getElementById("algoMsg");
+    document.getElementById("algoDesc").textContent = descOf(sel.value);
     algoMsg.textContent = "saving…";
     fetch("/device-algorithm", {
       method: "POST", headers: {"Content-Type": "application/json"},
