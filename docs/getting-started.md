@@ -146,7 +146,8 @@ Keepalive** buttons, and set the **pixel scale**.
 
 Saving writes **`data/calibration/calibration.json`** (board geometry + tap
 targets + `platform` + selected `algorithm`). No live device is required to
-calibrate — just a screenshot.
+calibrate — just a screenshot. This file is **per-device and git-ignored**; a
+tracked `data/calibration/calibration.example.json` documents the shape.
 
 ### Run it live
 

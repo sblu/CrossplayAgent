@@ -45,6 +45,13 @@ tools/android_dump.xml
 data/leaderboard.json
 data/leaderboard.html
 
+# Per-device calibration (each device is different — generate via /device-setup).
+# calibration.example.json is tracked to document the shape.
+data/calibration/calibration.json
+data/calibration/calibration_overlay.png
+data/calibration/button_row.png
+data/calibration/rack_region.png
+
 # Android working/debug screenshots (device-specific captures)
 data/calibration/android_*.png
 

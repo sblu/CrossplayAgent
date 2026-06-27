@@ -1,0 +1,27 @@
+{
+  "_note": "Template for data/calibration/calibration.json (which is git-ignored, per device). Generate yours from a phone screenshot via the dashboard's /device-setup page. Board geometry + rack_cells are in physical pixels; button coords are in logical points (physical / pixel_scale). The values below are a real Pixel 10 Pro (Android) example.",
+  "board_x": 16,
+  "board_y": 766,
+  "board_width": 1049,
+  "board_height": 1047,
+  "grid_size": 15,
+  "pixel_scale": 1,
+  "rack_cells": [
+    [78, 1997, 132, 119],
+    [210, 1997, 132, 119],
+    [341, 1997, 132, 119],
+    [473, 1997, 132, 119],
+    [605, 1997, 132, 119],
+    [737, 1997, 132, 119],
+    [868, 1997, 132, 119]
+  ],
+  "buttons": {
+    "submit": [783, 2228],
+    "more": [105, 2217],
+    "keepalive": [218, 1905],
+    "recall": [398, 2230],
+    "pass": [540, 1590]
+  },
+  "platform": "android",
+  "algorithm": "greedy"
+}
