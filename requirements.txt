@@ -1,0 +1,18 @@
+# Crossplay bot — Python dependencies.
+# Install into a virtualenv:  pip install -r requirements.txt
+#
+# Note: pytesseract is only a thin wrapper — you ALSO need the Tesseract OCR
+# engine installed at the system level (see docs/getting-started.md). It is
+# required for the Android board/rack reader; the headless simulator and the
+# leaderboard/arena do not need it.
+
+Flask==3.1.3
+numpy==2.4.6
+opencv-python==4.13.0.92
+pillow==12.2.0
+pytesseract==0.3.13
+python-dotenv==1.2.2
+
+# Device automation (only needed to drive a real phone — not for sim/arena work).
+Appium-Python-Client==5.3.1
+selenium==4.45.0

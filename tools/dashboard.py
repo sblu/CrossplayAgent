@@ -38,6 +38,31 @@ from crossplay.web.spectator import AGENTS, attach_spectator, premium_grid
 GAME_STATE_PATH = Path("data/game_state.json")
 CAL_FILE = "data/calibration/calibration.json"
 _BOT_LOG = Path("data/bot_run.log")
+DOCS_DIR = PROJECT_ROOT / "docs"
+
+
+def _discover_docs() -> dict:
+    """Map a URL slug → markdown Path for every doc under docs/ (recursively).
+
+    Slug is the path relative to docs/ without the .md suffix, e.g.
+    "getting-started" or "architecture/android-setup".
+    """
+    docs = {}
+    if DOCS_DIR.exists():
+        for p in sorted(DOCS_DIR.rglob("*.md")):
+            docs[p.relative_to(DOCS_DIR).with_suffix("").as_posix()] = p
+    return docs
+
+
+def _doc_title(path: Path) -> str:
+    """A doc's title: its first markdown H1, else a prettified file name."""
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+    except OSError:
+        pass
+    return path.stem.replace("-", " ").title()
 
 # Bot subprocess control — the live view can start/stop the Android game loop.
 _bot = {"proc": None}
@@ -152,6 +177,8 @@ NAV = """
      border-radius:6px;padding:6px 12px">Live Phone</a>
   <a href="/device-setup" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
      border-radius:6px;padding:6px 12px">Device Setup</a>
+  <a href="/docs" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
+     border-radius:6px;padding:6px 12px">Docs</a>
 </nav>"""
 
 _LANDING = """<!doctype html>
@@ -201,6 +228,17 @@ _LANDING = """<!doctype html>
     </div>
     <p class="note">Device Setup works from an uploaded screenshot — no live device
       needed. The Inspector/Calibration tools need a connected device + Appium.</p>
+  </div>
+
+  <div class="group"><h2>Learn</h2>
+    <div class="cards">
+      <a class="card" href="/docs/getting-started"><h3>Getting Started →</h3>
+        <p>Install, run the dashboard, the dictionary, devices, and the dev loop.</p></a>
+      <a class="card" href="/docs/adding-an-algorithm"><h3>Adding an Algorithm →</h3>
+        <p>The Agent contract, config→registry→class, and a worked example.</p></a>
+      <a class="card" href="/docs"><h3>All Docs →</h3>
+        <p>Guides and architecture notes, rendered in the browser.</p></a>
+    </div>
   </div>
 </div></body></html>"""
 
@@ -981,6 +1019,91 @@ refresh(); setInterval(refresh, 2500);
 </body></html>"""
 
 
+_DOCS_INDEX_HTML = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crossplay — Docs</title>
+<style>
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f4f4ef; color:#222;
+         margin:0; padding:1.5rem; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { margin:.2rem 0; } .sub { color:#888; margin:.2rem 0 1.4rem; }
+  .group h2 { font-size:.8rem; color:#999; text-transform:uppercase; letter-spacing:.04em;
+              margin:1.4rem 0 .6rem; }
+  a.card { display:block; text-decoration:none; color:inherit; background:#fff;
+           border-radius:12px; padding:.9rem 1.1rem; box-shadow:0 1px 3px rgba(0,0,0,.08);
+           border:1px solid #eee; margin-bottom:.7rem; transition:transform .08s; }
+  a.card:hover { transform:translateY(-2px); border-color:#3f5bb0; }
+  a.card h3 { margin:0; color:#3f5bb0; font-size:1rem; }
+  a.card .slug { color:#aaa; font-size:.75rem; font-family:ui-monospace,Menlo,monospace; }
+</style></head>
+<body><div class="wrap">
+{{ nav | safe }}
+<h1>Documentation</h1>
+<p class="sub">Guides and design notes, rendered from the <code>docs/</code> folder.</p>
+{% for group, docs in groups.items() %}
+  <div class="group"><h2>{{ group }}</h2>
+  {% for d in docs %}
+    <a class="card" href="/docs/{{ d.slug }}"><h3>{{ d.title }}</h3>
+       <span class="slug">docs/{{ d.slug }}.md</span></a>
+  {% endfor %}
+  </div>
+{% endfor %}
+</div></body></html>"""
+
+
+_DOCS_PAGE_HTML = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} — Crossplay Docs</title>
+<style>
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f4f4ef; color:#24292f;
+         margin:0; padding:1.5rem; }
+  .wrap { max-width:820px; margin:0 auto; }
+  .md { background:#fff; border-radius:12px; padding:1.6rem 2rem; box-shadow:0 1px 3px rgba(0,0,0,.08);
+        line-height:1.6; }
+  .md h1 { margin-top:0; border-bottom:1px solid #eaecef; padding-bottom:.3em; }
+  .md h2 { border-bottom:1px solid #eaecef; padding-bottom:.3em; margin-top:1.8em; }
+  .md h3 { margin-top:1.5em; }
+  .md code { background:#f4f4ef; border-radius:5px; padding:.15em .4em; font-size:.88em;
+             font-family:ui-monospace,Menlo,monospace; }
+  .md pre { background:#f6f8fa; border-radius:8px; padding:1rem; overflow:auto; }
+  .md pre code { background:none; padding:0; font-size:.85em; }
+  .md table { border-collapse:collapse; margin:1em 0; display:block; overflow:auto; }
+  .md th, .md td { border:1px solid #d0d7de; padding:.45em .8em; text-align:left; }
+  .md th { background:#f6f8fa; }
+  .md blockquote { margin:1em 0; padding:.2em 1em; color:#57606a; border-left:.25em solid #d0d7de; }
+  .md a { color:#3f5bb0; }
+  .md img { max-width:100%; }
+</style></head>
+<body><div class="wrap">
+{{ nav | safe }}
+<article class="md" id="content"></article>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script>
+const MD = {{ md | tojson }};
+const DOC_SLUG = {{ slug | tojson }};
+const el = document.getElementById("content");
+if (window.marked) {
+  el.innerHTML = marked.parse(MD);
+  // Rewrite relative *.md links to dashboard /docs routes (the route strips .md).
+  el.querySelectorAll('a[href]').forEach(a => {
+    const h = a.getAttribute("href");
+    if (/^https?:|^\/|^#|^mailto:/.test(h) || !/\.md(#|\?|$)/.test(h)) return;
+    const base = "/docs/" + DOC_SLUG;                 // current page URL
+    const path = new URL(h, location.origin + base).pathname.replace(/\.md(?=#|\?|$)/, "");
+    a.setAttribute("href", path);
+  });
+} else {
+  // Offline / CDN blocked: show the raw markdown rather than nothing.
+  const pre = document.createElement("pre");
+  pre.textContent = MD; el.appendChild(pre);
+}
+</script>
+</body></html>"""
+
+
 def mount_device_tools(app) -> bool:
     """Re-register tools/debug_server.py's routes onto `app`. Returns success."""
     try:
@@ -1031,6 +1154,30 @@ def main():
     def leaderboard():
         board = Leaderboard.load(args.leaderboard)
         return NAV + render_html_report(board)
+
+    @app.route("/docs")
+    def docs_index():
+        groups = {}
+        for slug, p in _discover_docs().items():
+            group = ("Guides" if "/" not in slug
+                     else slug.split("/")[0].replace("-", " ").title())
+            groups.setdefault(group, []).append({"slug": slug, "title": _doc_title(p)})
+        ordered = {}                       # Guides first, then sub-folders A→Z
+        if "Guides" in groups:
+            ordered["Guides"] = groups.pop("Guides")
+        for k in sorted(groups):
+            ordered[k] = groups[k]
+        return render_template_string(_DOCS_INDEX_HTML, nav=NAV, groups=ordered)
+
+    @app.route("/docs/<path:name>")
+    def docs_page(name):
+        if name.endswith(".md"):           # tolerate relative *.md links from markdown
+            name = name[:-3]
+        p = _discover_docs().get(name)
+        if p is None:
+            return "Doc not found.", 404
+        return render_template_string(_DOCS_PAGE_HTML, nav=NAV, md=p.read_text(),
+                                      title=_doc_title(p), slug=name)
 
     @app.route("/device-setup")
     def device_setup():
