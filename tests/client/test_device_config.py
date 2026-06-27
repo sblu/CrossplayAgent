@@ -54,6 +54,38 @@ def test_algorithm_roundtrip_and_preserved_on_blank_save(tmp_path):
     assert reloaded.algorithm == "heuristic" and reloaded.pixel_scale == 2
 
 
+def test_legacy_ios_geometry_only_config_migrates(tmp_path):
+    # Backward-compat: a pre-DeviceConfig calibration file (Owen's iOS setup) holds
+    # ONLY board geometry — no platform/algorithm/pixel_scale/rack_cells/buttons.
+    # Loading it must fill every device field with the historical iOS @3x defaults
+    # that were previously hardcoded, so his setup keeps working untouched.
+    path = str(tmp_path / "cal.json")
+    legacy = {"board_x": 27, "board_y": 800, "board_width": 1158,
+              "board_height": 1150, "grid_size": 15}
+    (tmp_path / "cal.json").write_text(json.dumps(legacy))
+
+    cal = Calibration.load(path)
+    assert (cal.board_x, cal.board_width, cal.grid_size) == (27, 1158, 15)
+
+    dev = DeviceConfig.load(path)
+    assert dev.pixel_scale == DEFAULT_PIXEL_SCALE
+    assert dev.submit == tuple(DEFAULT_BUTTONS["submit"])
+    assert dev.more == tuple(DEFAULT_BUTTONS["more"])
+    assert dev.keepalive == tuple(DEFAULT_BUTTONS["keepalive"])
+    assert len(dev.rack_cells) == 7
+    assert dev.recall is None          # Android-only button, absent for iOS
+    assert dev.platform == "" and dev.algorithm == ""
+
+    # A later partial save (e.g. the dashboard writing just the algorithm) must
+    # preserve his board geometry and keep the file Calibration-loadable.
+    dev.algorithm = "heuristic"
+    dev.save(path)
+    data = json.loads((tmp_path / "cal.json").read_text())
+    assert data["board_x"] == 27 and data["board_width"] == 1158
+    assert data["algorithm"] == "heuristic"
+    assert Calibration.load(path).board_width == 1158
+
+
 def test_device_save_preserves_board_geometry(tmp_path):
     path = str(tmp_path / "cal.json")
     Calibration(board_x=27, board_y=800, board_width=1158, board_height=1150).save(path)
