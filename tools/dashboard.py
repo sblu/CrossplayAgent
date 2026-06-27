@@ -11,6 +11,7 @@ Hosts, on a single port:
     open http://localhost:8765
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,11 +23,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from flask import Flask, jsonify, render_template_string, request
 
 from crossplay.client.device_config import DeviceConfig
+from crossplay.engine.board import LETTER_VALUES
 from crossplay.engine.dictionary import Dictionary
 from crossplay.leaderboard import Leaderboard
 from crossplay.leaderboard_report import render_html_report
 from crossplay.vision.calibration import Calibration
-from crossplay.web.spectator import AGENTS, attach_spectator
+from crossplay.web.spectator import AGENTS, attach_spectator, premium_grid
+
+GAME_STATE_PATH = Path("data/game_state.json")
 
 # Shared top nav injected into the views we own.
 NAV = """
@@ -38,6 +42,8 @@ NAV = """
      border-radius:6px;padding:6px 12px">Live Game</a>
   <a href="/leaderboard" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
      border-radius:6px;padding:6px 12px">Leaderboard</a>
+  <a href="/device-live" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
+     border-radius:6px;padding:6px 12px">Live Phone</a>
   <a href="/device-setup" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
      border-radius:6px;padding:6px 12px">Device Setup</a>
 </nav>"""
@@ -71,6 +77,8 @@ _LANDING = """<!doctype html>
         <p>Watch simulated games play out move-by-move, app-styled board.</p></a>
       <a class="card" href="/leaderboard"><h3>Leaderboard →</h3>
         <p>Self-play standings, Elo, and progress charts.</p></a>
+      <a class="card" href="/device-live"><h3>Live Phone →</h3>
+        <p>Mirror the real phone game as the bot plays it.</p></a>
     </div>
   </div>
 
@@ -253,6 +261,146 @@ fetch("/device-config").then(r => r.json()).then(d => {
 </div></body></html>"""
 
 
+_DEVICE_LIVE_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crossplay — Live Phone</title>
+<style>
+  :root {
+    --tile: #3f5bb0; --tile-new: #6b86d6; --tile-text: #fff;
+    --cell: #fbfbf7; --line: #e6e6dd; --bg: #f4f4ef;
+    --c2l: #4a90d9; --c3l: #2faa6a; --c2w: #e0a426; --c3w: #c63f93;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
+         margin: 0; padding: 1rem; color: #222; display: flex; flex-direction: column;
+         align-items: center; }
+  .wrap { width: min(96vw, 460px); }
+  .status { text-align: center; margin: .7rem 0 .3rem; font-size: 1.05rem; min-height: 1.2em; }
+  .status b { color: #111; }
+  .meta { text-align: center; color: #999; font-size: .75rem; margin-bottom: .6rem; }
+  .board { display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px;
+           background: var(--line); border: 2px solid var(--line); border-radius: 8px;
+           aspect-ratio: 1; }
+  .cell { background: var(--cell); position: relative; display: flex;
+          align-items: center; justify-content: center; border-radius: 2px;
+          font-size: clamp(5px, 1.4vw, 9px); font-weight: 700; }
+  .prem-2L { color: var(--c2l); } .prem-3L { color: var(--c3l); }
+  .prem-2W { color: var(--c2w); } .prem-3W { color: var(--c3w); }
+  .star { color: #c9a227; font-size: 1.3em; }
+  .tile { position: absolute; inset: 0; background: var(--tile);
+          color: var(--tile-text); border-radius: 3px; display: flex;
+          align-items: center; justify-content: center;
+          font-size: clamp(8px, 2.3vw, 15px); font-weight: 700; }
+  .tile.new { background: var(--tile-new); box-shadow: 0 0 0 2px #fff inset; }
+  .tile.blank { font-style: italic; opacity: .92; }
+  .tile .v { position: absolute; right: 1px; bottom: 0; font-size: .5em; font-weight: 600; }
+  .rack { margin-top: .9rem; background: #233; border-radius: 10px; padding: .4rem; }
+  .rack .lbl { color: #9bb; font-size: .7rem; margin: 0 .2rem .25rem; }
+  .rtiles { display: grid; grid-template-columns: repeat(7, 1fr); gap: .35rem; }
+  .rtile { background: var(--tile); color: #fff; border-radius: 6px; aspect-ratio: 1;
+           display: flex; align-items: center; justify-content: center;
+           font-weight: 700; position: relative; font-size: clamp(11px, 3.4vw, 20px); }
+  .rtile.empty { background: #2c3d3d; }
+  .rtile .v { position: absolute; right: 3px; bottom: 1px; font-size: .55em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  {{ nav | safe }}
+  <div class="status" id="status">Waiting for the phone…</div>
+  <div class="meta" id="meta"></div>
+  <div class="board" id="board"></div>
+  <div class="rack" id="rack"><div class="lbl">Bot rack</div><div class="rtiles"></div></div>
+</div>
+<script>
+const STATE_URL = {{ state_url | tojson }};
+const PREMIUM = {{ premium | tojson }};
+const VALUES = {{ values | tojson }};
+const premClass = {"2L":"prem-2L","3L":"prem-3L","2W":"prem-2W","3W":"prem-3W"};
+
+const boardEl = document.getElementById("board");
+const cells = [];
+for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+  const d = document.createElement("div");
+  d.className = "cell";
+  boardEl.appendChild(d);
+  cells.push(d);
+}
+
+function tileHtml(letter, value, cls) {
+  const v = value === 0 ? "" : `<span class="v">${value}</span>`;
+  return `<div class="tile ${cls}">${letter}${v}</div>`;
+}
+
+// Compute the cells touched by the last move so they can be highlighted.
+function lastCells(m) {
+  const out = [];
+  if (!m || m.action === "pass" || !m.word) return out;
+  const played = new Set(m.tiles_played || []);
+  for (let i = 0; i < m.word.length; i++) {
+    if (m.tiles_played && !played.has(i)) continue;
+    const r = m.horizontal ? m.row : m.row + i;
+    const c = m.horizontal ? m.col + i : m.col;
+    out.push([r, c]);
+  }
+  return out;
+}
+
+function render(s) {
+  if (!s.ready) {
+    document.getElementById("status").innerHTML =
+      "<b>Waiting for the phone…</b> Start an autonomous Android game.";
+    document.getElementById("meta").textContent = "";
+    return;
+  }
+  const m = s.last_move;
+  let status = "Live phone game";
+  if (m && m.action === "pass") status = "Bot passed";
+  else if (m && m.word) status = `Last play: <b>${m.word}</b>` +
+    (m.score != null ? ` for ${m.score}` : "");
+  document.getElementById("status").innerHTML = status;
+  document.getElementById("meta").textContent = s.timestamp ? "updated " + s.timestamp : "";
+
+  const news = new Set(lastCells(m).map(b => b[0] + "," + b[1]));
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const el = cells[r * 15 + c];
+    const letter = (s.board[r] && s.board[r][c]) || "";
+    if (letter) {
+      const cls = news.has(r + "," + c) ? "new" : "";
+      el.innerHTML = tileHtml(letter, VALUES[letter] || 0, cls);
+    } else {
+      const prem = PREMIUM[r][c];
+      if (r === 7 && c === 7) el.innerHTML = '<span class="star">★</span>';
+      else if (prem) el.innerHTML = `<span class="${premClass[prem]}">${prem}</span>`;
+      else el.innerHTML = "";
+    }
+  }
+
+  const slots = document.querySelector("#rack .rtiles");
+  let html = "";
+  const rack = s.rack || [];
+  for (let j = 0; j < 7; j++) {
+    const t = rack[j];
+    if (t == null || t === "") { html += '<div class="rtile empty"></div>'; continue; }
+    const blank = t === "?";
+    const v = blank ? "" : `<span class="v">${VALUES[t] || 0}</span>`;
+    html += `<div class="rtile">${blank ? "·" : t}${v}</div>`;
+  }
+  slots.innerHTML = html;
+}
+
+function poll() {
+  fetch(STATE_URL).then(r => r.json()).then(render).catch(()=>{});
+}
+poll();
+setInterval(poll, 1500);
+</script>
+</body></html>"""
+
+
 def mount_device_tools(app) -> bool:
     """Re-register tools/debug_server.py's routes onto `app`. Returns success."""
     try:
@@ -334,6 +482,31 @@ def main():
             return jsonify({"success": True, "path": cal_path})
         except Exception as e:
             return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"})
+
+    live_values = {k: v for k, v in LETTER_VALUES.items() if k != ' '}
+
+    @app.route("/device-live")
+    def device_live():
+        return render_template_string(
+            _DEVICE_LIVE_HTML, nav=NAV, premium=premium_grid(),
+            values=live_values, state_url="/device-live-state",
+        )
+
+    @app.route("/device-live-state")
+    def device_live_state():
+        if not GAME_STATE_PATH.exists():
+            return jsonify({"ready": False})
+        try:
+            data = json.loads(GAME_STATE_PATH.read_text())
+        except (ValueError, OSError):
+            return jsonify({"ready": False})
+        return jsonify({
+            "ready": True,
+            "board": data.get("board", [["" for _ in range(15)] for _ in range(15)]),
+            "rack": data.get("rack", []),
+            "last_move": data.get("last_move"),
+            "timestamp": data.get("timestamp"),
+        })
 
     attach_spectator(
         app, page_route="/sim", state_route="/sim-state",
