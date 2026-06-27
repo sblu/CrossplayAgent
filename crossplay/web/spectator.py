@@ -13,6 +13,7 @@ from flask import jsonify, render_template_string
 from crossplay.engine.board import Board, CellType, LETTER_VALUES
 from crossplay.game.state import GameState
 from crossplay.leaderboard import Leaderboard
+from crossplay.strategy.agent_config import build_configured_agent
 from crossplay.strategy.registry import AGENTS
 
 _PREMIUM_CODE = {
@@ -37,25 +38,71 @@ def _move_cells(move: dict) -> list[list[int]]:
 
 
 class Spectator:
-    """Owns the background game loop and the latest published state."""
+    """Owns the background game loop and the latest published state.
 
-    def __init__(self, agent_specs, dictionary, *, delay=1.2, seed=0, leaderboard_path=None):
+    The loop is *controllable*: it can be started/stopped (paused) and the head-to-head
+    matchup reconfigured at runtime. A reconfigure takes effect at the next game
+    boundary so a game in progress is never left half-recorded. Agents are built from
+    the named `agents.json` profiles so the arena and the device bot share one config.
+    """
+
+    def __init__(self, agent_specs, dictionary, *, delay=1.2, seed=0,
+                 leaderboard_path=None, autostart=True):
+        self._dictionary = dictionary
         self.names = [agent_specs[0], agent_specs[1]]
-        self._agents = [AGENTS[agent_specs[0]](dictionary), AGENTS[agent_specs[1]](dictionary)]
+        self._agents = self._build_agents(self.names)
         self._delay = delay
         self._seed = seed
         self._leaderboard_path = leaderboard_path
         self._lock = threading.Lock()
-        self._state = {"ready": False}
+        self._state = {"ready": False, "running": autostart}
+        self._running = autostart
+        self._pending = None     # (name_a, name_b) to switch to at the next game
+        self._game_no = 0
+
+    def _build_agents(self, names):
+        return [build_configured_agent(names[0], self._dictionary),
+                build_configured_agent(names[1], self._dictionary)]
 
     def snapshot(self) -> dict:
         with self._lock:
             return dict(self._state)
 
+    # ── Runtime control ───────────────────────────────────────────────────────
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def status(self) -> dict:
+        with self._lock:
+            return {"running": self._running, "names": list(self.names),
+                    "pending": list(self._pending) if self._pending else None}
+
+    def set_running(self, running: bool) -> None:
+        with self._lock:
+            self._running = bool(running)
+
+    def configure(self, name_a: str, name_b: str, *, start: bool | None = None) -> None:
+        """Queue a new head-to-head matchup (applied at the next game). Optionally
+        start/stop the loop in the same call."""
+        with self._lock:
+            self._pending = (name_a, name_b)
+            if start is not None:
+                self._running = bool(start)
+
+    def _maybe_reconfigure(self) -> None:
+        with self._lock:
+            pending, self._pending = self._pending, None
+        if pending:
+            self.names = list(pending)
+            self._agents = self._build_agents(self.names)
+
     def _publish(self, state, last_cells, status, game_no, move_no, over=False, final=None):
         with self._lock:
             self._state = {
                 "ready": True,
+                "running": self._running,
                 "board": [row[:] for row in state.board.grid],
                 "blanks": [list(c) for c in state.blank_cells],
                 "racks": [list(state.rack(0)), list(state.rack(1))],
@@ -71,17 +118,34 @@ class Spectator:
                 "final": list(final) if final else None,
             }
 
+    def _publish_idle(self) -> None:
+        with self._lock:
+            st = dict(self._state) if self._state.get("ready") else {"ready": False}
+            st["running"] = False
+            st["names"] = list(self.names)
+            self._state = st
+
     def run_loop(self):
         board = Leaderboard.load(self._leaderboard_path) if self._leaderboard_path else None
-        game_no = 0
         while True:
-            game_no += 1
+            if not self.is_running():
+                self._publish_idle()
+                time.sleep(0.4)
+                continue
+
+            self._maybe_reconfigure()
+            self._game_no += 1
+            game_no = self._game_no
             state = GameState.new(n_players=2, seed=self._seed + game_no)
             self._publish(state, [], "New game — opening move…", game_no, 0)
             time.sleep(self._delay)
 
             move_no = 0
+            aborted = False
             while not state.is_over():
+                if not self.is_running():        # Stop pressed mid-game: abandon it.
+                    aborted = True
+                    break
                 seat = state.turn
                 move = self._agents[seat].choose_move(state.board, state.rack(seat))
                 move_no += 1
@@ -96,6 +160,10 @@ class Spectator:
                         f"{self.names[seat]} played {move['word']} for {move['score']} points",
                         game_no, move_no)
                 time.sleep(self._delay)
+
+            if aborted:
+                self._publish_idle()
+                continue
 
             final = state.final_scores()
             winner = state.winner()

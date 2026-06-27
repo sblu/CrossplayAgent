@@ -40,10 +40,24 @@ class AgentRecord:
 
 
 @dataclass
+class MatchupRecord:
+    """Head-to-head tally for one *unordered* pair of agents.
+
+    `a_wins`/`b_wins` are wins for the alphabetically-first / -second name in the
+    pair (the canonical order), so the same record serves a query from either side.
+    """
+    games: int = 0
+    a_wins: int = 0
+    b_wins: int = 0
+    ties: int = 0
+
+
+@dataclass
 class Leaderboard:
     k_factor: float = DEFAULT_K
     agents: dict[str, AgentRecord] = field(default_factory=dict)
     history: list[dict] = field(default_factory=list)
+    matchups: dict[str, MatchupRecord] = field(default_factory=dict)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -54,10 +68,13 @@ class Leaderboard:
             return cls()
         raw = json.loads(p.read_text())
         agents = {name: AgentRecord(**rec) for name, rec in raw.get("agents", {}).items()}
+        matchups = {key: MatchupRecord(**rec)
+                    for key, rec in raw.get("matchups", {}).items()}
         return cls(
             k_factor=raw.get("k_factor", DEFAULT_K),
             agents=agents,
             history=raw.get("history", []),
+            matchups=matchups,
         )
 
     def save(self, path: str = DEFAULT_PATH) -> None:
@@ -67,12 +84,32 @@ class Leaderboard:
             "k_factor": self.k_factor,
             "agents": {name: vars(rec) for name, rec in self.agents.items()},
             "history": self.history,
+            "matchups": {key: vars(rec) for key, rec in self.matchups.items()},
         }, indent=2))
 
     # ── Updates ─────────────────────────────────────────────────────────────────
 
     def _agent(self, name: str) -> AgentRecord:
         return self.agents.setdefault(name, AgentRecord())
+
+    @staticmethod
+    def _matchup_key(name_a: str, name_b: str) -> str:
+        lo, hi = sorted((name_a, name_b))
+        return f"{lo}\x1f{hi}"
+
+    def matchup(self, name_a: str, name_b: str) -> dict:
+        """Head-to-head record between two agents, from `name_a`'s perspective."""
+        rec = self.matchups.get(self._matchup_key(name_a, name_b))
+        if rec is None:
+            return {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+        lo, _ = sorted((name_a, name_b))
+        a_is_lo = name_a == lo
+        return {
+            "games": rec.games,
+            "wins": rec.a_wins if a_is_lo else rec.b_wins,
+            "losses": rec.b_wins if a_is_lo else rec.a_wins,
+            "ties": rec.ties,
+        }
 
     @staticmethod
     def _expected(rating: float, opp_rating: float) -> float:
@@ -98,12 +135,26 @@ class Leaderboard:
             exp_b = 1.0 - exp_a
             a.rating += self.k_factor * (outcome_a - exp_a)
             b.rating += self.k_factor * ((1.0 - outcome_a) - exp_b)
+            self._record_matchup(name_a, name_b, outcome_a)
 
         for rec, sf, sa, res in ((a, score_a, score_b, ra), (b, score_b, score_a, rb)):
             rec.games += 1
             rec.score_for += sf
             rec.score_against += sa
             setattr(rec, res, getattr(rec, res) + 1)
+
+    def _record_matchup(self, name_a: str, name_b: str, outcome_a: float) -> None:
+        """Tally one game into the unordered head-to-head record. `outcome_a` is
+        1.0 (a won), 0.0 (b won) or 0.5 (tie)."""
+        rec = self.matchups.setdefault(self._matchup_key(name_a, name_b), MatchupRecord())
+        rec.games += 1
+        lo, _ = sorted((name_a, name_b))
+        if outcome_a == 0.5:
+            rec.ties += 1
+        elif (outcome_a == 1.0) == (name_a == lo):
+            rec.a_wins += 1
+        else:
+            rec.b_wins += 1
 
     def snapshot(self, run: str | None = None) -> None:
         """Append a history point per agent (call once per self-play batch)."""

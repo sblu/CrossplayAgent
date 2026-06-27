@@ -26,7 +26,7 @@ DEFAULT_RACK_CELLS = [
 DEFAULT_BUTTONS = {"submit": [311, 810], "more": [38, 810], "keepalive": [300, 130]}
 
 # Keys this model owns within the shared calibration file.
-_DEVICE_KEYS = ("platform", "pixel_scale", "rack_cells", "buttons")
+_DEVICE_KEYS = ("platform", "algorithm", "pixel_scale", "rack_cells", "buttons")
 
 
 def update_calibration_file(path: str | Path, **fields) -> None:
@@ -41,6 +41,7 @@ def update_calibration_file(path: str | Path, **fields) -> None:
 @dataclass
 class DeviceConfig:
     platform: str = ""          # "android" | "ios" — which device this profile targets
+    algorithm: str = ""         # named agent profile (data/agents.json) the bot plays with
     pixel_scale: int = DEFAULT_PIXEL_SCALE
     rack_cells: list[list[int]] = field(default_factory=lambda: [c[:] for c in DEFAULT_RACK_CELLS])
     buttons: dict[str, list[int]] = field(default_factory=lambda: {k: v[:] for k, v in DEFAULT_BUTTONS.items()})
@@ -71,6 +72,8 @@ class DeviceConfig:
         cfg = cls()
         if "platform" in data:
             cfg.platform = str(data["platform"])
+        if "algorithm" in data:
+            cfg.algorithm = str(data["algorithm"])
         if "pixel_scale" in data:
             cfg.pixel_scale = int(data["pixel_scale"])
         if "rack_cells" in data:
@@ -87,4 +90,6 @@ class DeviceConfig:
         )
         if self.platform:          # only write when set, so a save without it
             fields["platform"] = self.platform   # doesn't wipe an existing value
+        if self.algorithm:
+            fields["algorithm"] = self.algorithm
         update_calibration_file(path, **fields)

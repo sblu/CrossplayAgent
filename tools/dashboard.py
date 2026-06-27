@@ -28,6 +28,7 @@ from flask import Flask, jsonify, render_template_string, request
 
 from crossplay.client.device_config import DeviceConfig
 from crossplay.engine.board import LETTER_VALUES
+from crossplay.strategy.agent_config import AGENT_CONFIG_PATH, load_agent_configs
 from crossplay.engine.dictionary import Dictionary
 from crossplay.leaderboard import Leaderboard
 from crossplay.leaderboard_report import render_html_report
@@ -143,6 +144,8 @@ NAV = """
      border-radius:6px;padding:6px 12px">⌂ Home</a>
   <a href="/sim" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
      border-radius:6px;padding:6px 12px">Live Game</a>
+  <a href="/arena" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
+     border-radius:6px;padding:6px 12px">Arena</a>
   <a href="/leaderboard" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
      border-radius:6px;padding:6px 12px">Leaderboard</a>
   <a href="/device-live" style="text-decoration:none;color:#3f5bb0;border:1px solid #3f5bb0;
@@ -178,6 +181,8 @@ _LANDING = """<!doctype html>
     <div class="cards">
       <a class="card" href="/sim"><h3>Live Game →</h3>
         <p>Watch simulated games play out move-by-move, app-styled board.</p></a>
+      <a class="card" href="/arena"><h3>Arena →</h3>
+        <p>Pick two algorithms, run the competition, track head-to-head W/L.</p></a>
       <a class="card" href="/leaderboard"><h3>Leaderboard →</h3>
         <p>Self-play standings, Elo, and progress charts.</p></a>
     </div>
@@ -669,20 +674,295 @@ function renderConfig(c) {
     : "Unknown";
   const platNote = c.platform_source === "inferred" ? " (inferred from environment)"
                  : c.platform_source === "unknown" ? " — set it in Device Setup" : "";
+  const opts = (c.algorithms || []).map(a =>
+    `<option value="${a.name}"${a.name === c.algorithm ? " selected" : ""}>` +
+    `${a.name}${a.description ? " — " + a.description : ""}</option>`).join("");
   body.innerHTML =
     `Stored in <span class="file">${c.path}</span>` +
     `<table>` +
     `<tr><td class="k">platform</td><td><code>${plat}</code>` +
       `<span style="color:#999">${platNote}</span></td></tr>` +
+    `<tr><td class="k">algorithm</td><td>` +
+      `<select id="algoSel">${opts}</select> ` +
+      `<span id="algoMsg" style="color:#2faa6a"></span><br>` +
+      `<span style="color:#999">defined in </span>` +
+      `<span class="file">${c.agents_file || "data/agents.json"}</span></td></tr>` +
     `<tr><td class="k">pixel scale</td><td><code>${c.pixel_scale}</code></td></tr>` +
     `<tr><td class="k">board</td><td><code>x ${b.board_x}, y ${b.board_y}, ` +
       `${b.board_width}×${b.board_height}, grid ${b.grid_size}</code></td></tr>` +
     `<tr><td class="k">rack cells</td><td><code>${(c.rack_cells||[]).length} cells</code></td></tr>` +
     `<tr><td class="k">buttons</td><td><code>${btns}</code></td></tr>` +
     `</table>`;
+
+  const sel = document.getElementById("algoSel");
+  if (sel) sel.addEventListener("change", () => {
+    const algoMsg = document.getElementById("algoMsg");
+    algoMsg.textContent = "saving…";
+    fetch("/device-algorithm", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({algorithm: sel.value})
+    }).then(r => r.json()).then(d => {
+      algoMsg.style.color = d.ok ? "#2faa6a" : "#9a2b22";
+      algoMsg.textContent = d.ok ? "saved · applies on next Start" : (d.error || "failed");
+    }).catch(() => { algoMsg.style.color = "#9a2b22"; algoMsg.textContent = "failed"; });
+  });
 }
 fetch("/device-config").then(r => r.json()).then(renderConfig)
   .catch(() => { document.getElementById("cfgbody").textContent = "Failed to load config."; });
+</script>
+</body></html>"""
+
+
+_ARENA_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crossplay — Arena</title>
+<style>
+  :root {
+    --tile: #3f5bb0; --tile-new: #6b86d6; --tile-text: #fff;
+    --cell: #fbfbf7; --line: #e6e6dd; --bg: #f4f4ef;
+    --c2l: #4a90d9; --c3l: #2faa6a; --c2w: #e0a426; --c3w: #c63f93;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
+         margin: 0; padding: 1rem; color: #222; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { margin: .2rem 0; } .hint { color: #777; font-size: .85rem; margin: .2rem 0 1rem; }
+  .layout { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: flex-start; }
+  .left { flex: 1 1 360px; min-width: 320px; } .right { flex: 1 1 380px; min-width: 320px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+          padding: 1rem; margin-bottom: 1rem; }
+  .card h2 { font-size: .8rem; color: #999; text-transform: uppercase;
+             letter-spacing: .04em; margin: 0 0 .7rem; }
+  .pickers { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  select { font: 600 14px/1 inherit; padding: 7px 8px; border-radius: 7px;
+           border: 1px solid #ccd; background: #fff; color: #233; max-width: 200px; }
+  .vs { color: #bbb; font-weight: 700; }
+  .toggle { border: 0; border-radius: 8px; padding: .6rem 1.2rem; font-weight: 700;
+            font-size: .9rem; cursor: pointer; color: #fff; background: #2faa6a;
+            margin-top: .8rem; }
+  .toggle.on { background: #d2483f; }
+  .toggle:disabled { opacity: .55; cursor: default; }
+  .runline { font-size: .85rem; color: #666; margin-top: .55rem; }
+  .runline b { color: #222; }
+  .msg { border-radius: 9px; padding: .55rem .8rem; font-size: .82rem; margin-top: .7rem; }
+  .msg.error { background: #fcecea; color: #9a2b22; } .msg.hidden { display: none; }
+  .file { font-family: ui-monospace, Menlo, monospace; color: #3f5bb0;
+          background: #f4f4ef; border-radius: 5px; padding: .12rem .4rem; }
+  .h2h { display: flex; justify-content: space-around; text-align: center; margin: .3rem 0; }
+  .h2h .n { font-size: 2rem; font-weight: 800; }
+  .h2h .l { font-size: .7rem; color: #999; text-transform: uppercase; letter-spacing: .03em; }
+  .h2h .win .n { color: #2faa6a; } .h2h .loss .n { color: #d2483f; }
+  .h2h .tie .n { color: #999; }
+  .h2hsub { text-align: center; color: #888; font-size: .82rem; margin-top: .2rem; }
+  table.stand { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  table.stand th, table.stand td { padding: .35rem .5rem; text-align: right;
+                                   border-bottom: 1px solid #f0f0ea; }
+  table.stand th:nth-child(2), table.stand td:nth-child(2) { text-align: left; }
+  table.stand th { color: #999; font-weight: 600; font-size: .72rem;
+                   text-transform: uppercase; }
+  table.stand tr.cur td { background: #f3f6fd; font-weight: 700; }
+  .scores { display: flex; justify-content: space-between; align-items: center;
+            background: #fff; border-radius: 14px; padding: .6rem 1rem; margin-bottom: .5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .player { text-align: center; flex: 1; }
+  .player .name { font-size: .78rem; color: #888; text-transform: capitalize; }
+  .player .pts { font-size: 1.5rem; font-weight: 700; }
+  .player.turn { color: var(--tile); } .player.turn .name { color: var(--tile); }
+  .status { text-align: center; margin: .4rem 0; font-size: .9rem; min-height: 1.2em; }
+  .status b { color: #111; }
+  .meta { text-align: center; color: #999; font-size: .72rem; margin-bottom: .5rem; }
+  .board { display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px;
+           background: var(--line); border: 2px solid var(--line); border-radius: 8px;
+           aspect-ratio: 1; }
+  .cell { background: var(--cell); position: relative; display: flex;
+          align-items: center; justify-content: center; border-radius: 2px;
+          font-size: clamp(5px, 1.4vw, 9px); font-weight: 700; }
+  .prem-2L { color: var(--c2l); } .prem-3L { color: var(--c3l); }
+  .prem-2W { color: var(--c2w); } .prem-3W { color: var(--c3w); }
+  .star { color: #c9a227; font-size: 1.3em; }
+  .tile { position: absolute; inset: 0; background: var(--tile); color: var(--tile-text);
+          border-radius: 3px; display: flex; align-items: center; justify-content: center;
+          font-size: clamp(8px, 2.3vw, 15px); font-weight: 700; }
+  .tile.new { background: var(--tile-new); box-shadow: 0 0 0 2px #fff inset; }
+  .tile .v { position: absolute; right: 1px; bottom: 0; font-size: .5em; font-weight: 600; }
+</style>
+</head>
+<body><div class="wrap">
+{{ nav | safe }}
+<h1>Arena</h1>
+<p class="hint">Pick two algorithms and run the head-to-head competition that drives the
+  <a href="/leaderboard">leaderboard</a>. Edit the profiles in
+  <span class="file">{{ agents_file_hint }}</span>.</p>
+
+<div class="layout">
+  <div class="left">
+    <div class="card">
+      <h2>Matchup</h2>
+      <div class="pickers">
+        <select id="selA"></select>
+        <span class="vs">vs</span>
+        <select id="selB"></select>
+      </div>
+      <button class="toggle" id="toggle" disabled>…</button>
+      <div class="runline" id="runline">Loading…</div>
+      <div class="msg hidden" id="msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Head-to-head</h2>
+      <div class="h2h">
+        <div class="win"><div class="n" id="h2hW">0</div><div class="l" id="h2hWl">A wins</div></div>
+        <div class="tie"><div class="n" id="h2hT">0</div><div class="l">ties</div></div>
+        <div class="loss"><div class="n" id="h2hL">0</div><div class="l" id="h2hLl">B wins</div></div>
+      </div>
+      <div class="h2hsub" id="h2hsub">No games yet between this pair.</div>
+    </div>
+
+    <div class="card">
+      <h2>Standings</h2>
+      <table class="stand"><thead><tr><th>#</th><th>Agent</th><th>Rating</th>
+        <th>Games</th><th>W-L-T</th><th>Win%</th></tr></thead>
+        <tbody id="standBody"></tbody></table>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="scores">
+      <div class="player" id="p0"><div class="name"></div><div class="pts"></div></div>
+      <div class="vs">vs</div>
+      <div class="player" id="p1"><div class="name"></div><div class="pts"></div></div>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="meta" id="meta"></div>
+    <div class="board" id="board"></div>
+  </div>
+</div>
+</div>
+<script>
+const STATE_URL = {{ state_url | tojson }};
+const PREMIUM = {{ premium | tojson }};
+const VALUES = {{ values | tojson }};
+const premClass = {"2L":"prem-2L","3L":"prem-3L","2W":"prem-2W","3W":"prem-3W"};
+
+// ── Board (mirrors the live spectator) ──────────────────────────────────
+const boardEl = document.getElementById("board"), cells = [];
+for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+  const d = document.createElement("div"); d.className = "cell";
+  boardEl.appendChild(d); cells.push(d);
+}
+function tileHtml(letter, value, cls) {
+  const v = value === 0 ? "" : `<span class="v">${value}</span>`;
+  return `<div class="tile ${cls}">${letter}${v}</div>`;
+}
+function renderBoard(s) {
+  if (!s.ready) {
+    document.getElementById("status").innerHTML =
+      s.running === false ? "<b>Stopped.</b> Pick a matchup and press Start."
+                          : "<b>Starting…</b>";
+    return;
+  }
+  for (let i = 0; i < 2; i++) {
+    const p = document.getElementById("p" + i);
+    p.querySelector(".name").textContent = s.names[i];
+    p.querySelector(".pts").textContent = s.scores[i];
+    p.classList.toggle("turn", !s.over && s.turn === i);
+  }
+  document.getElementById("status").innerHTML = "<b>" + s.status + "</b>";
+  document.getElementById("meta").textContent =
+    `game ${s.game_no} · move ${s.move_no} · ${s.bag} tiles in bag`;
+  const news = new Set((s.last_cells || []).map(b => b[0] + "," + b[1]));
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const el = cells[r * 15 + c], letter = s.board[r][c];
+    if (letter) {
+      el.innerHTML = tileHtml(letter, VALUES[letter] || 0,
+                              news.has(r + "," + c) ? "new" : "");
+    } else {
+      const prem = PREMIUM[r][c];
+      if (r === 7 && c === 7) el.innerHTML = '<span class="star">★</span>';
+      else if (prem) el.innerHTML = `<span class="${premClass[prem]}">${prem}</span>`;
+      else el.innerHTML = "";
+    }
+  }
+}
+function pollBoard() {
+  fetch(STATE_URL).then(r => r.json()).then(renderBoard).catch(()=>{});
+}
+pollBoard(); setInterval(pollBoard, 700);
+
+// ── Controls + stats ────────────────────────────────────────────────────
+const selA = document.getElementById("selA"), selB = document.getElementById("selB");
+const toggle = document.getElementById("toggle"), runline = document.getElementById("runline");
+const msgEl = document.getElementById("msg");
+let running = false, optionsLoaded = false;
+
+function showMsg(t) { msgEl.className = "msg error"; msgEl.textContent = t; }
+function hideMsg() { msgEl.className = "msg hidden"; }
+
+function fillOptions(sel, algos, chosen) {
+  sel.innerHTML = algos.map(a =>
+    `<option value="${a.name}"${a.name === chosen ? " selected" : ""}>${a.name}</option>`
+  ).join("");
+}
+function renderStandings(rows, curA, curB) {
+  const cur = new Set([curA, curB]);
+  document.getElementById("standBody").innerHTML = rows.length ? rows.map((r, i) =>
+    `<tr class="${cur.has(r.name) ? "cur" : ""}"><td>${i+1}</td><td>${r.name}</td>` +
+    `<td>${r.rating}</td><td>${r.games}</td><td>${r.record}</td><td>${r.winrate}</td></tr>`
+  ).join("") : '<tr><td colspan="6" style="text-align:center;color:#aaa">No games yet</td></tr>';
+}
+function renderH2H(m, a, b) {
+  document.getElementById("h2hW").textContent = m.wins;
+  document.getElementById("h2hT").textContent = m.ties;
+  document.getElementById("h2hL").textContent = m.losses;
+  document.getElementById("h2hWl").textContent = a + " wins";
+  document.getElementById("h2hLl").textContent = b + " wins";
+  document.getElementById("h2hsub").textContent = m.games
+    ? `${m.games} game${m.games === 1 ? "" : "s"} played · ${a} vs ${b}`
+    : "No games yet between this pair.";
+}
+function setRunning(r) {
+  running = r;
+  toggle.disabled = false;
+  toggle.textContent = r ? "Stop competition" : "Start competition";
+  toggle.classList.toggle("on", r);
+  runline.innerHTML = r
+    ? `Running — <b>${selA.value}</b> vs <b>${selB.value}</b>.`
+    : "Stopped. Choose a matchup, then Start.";
+}
+
+function refresh() {
+  const q = optionsLoaded ? `?a=${encodeURIComponent(selA.value)}&b=${encodeURIComponent(selB.value)}` : "";
+  fetch("/arena-config" + q).then(r => r.json()).then(d => {
+    if (!optionsLoaded) {
+      fillOptions(selA, d.algorithms, d.selected.a);
+      fillOptions(selB, d.algorithms, d.selected.b);
+      optionsLoaded = true;
+    }
+    setRunning(d.running);
+    renderH2H(d.matchup, d.selected.a, d.selected.b);
+    renderStandings(d.standings, d.current.a, d.current.b);
+  }).catch(()=>{});
+}
+// When the user changes a dropdown, refresh head-to-head for the new pair.
+selA.addEventListener("change", refresh);
+selB.addEventListener("change", refresh);
+
+toggle.addEventListener("click", () => {
+  const action = running ? "stop" : "start";
+  toggle.disabled = true; hideMsg();
+  fetch("/arena-control", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action, a: selA.value, b: selB.value})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) { setRunning(!!d.running); refresh(); }
+    else { toggle.disabled = false; showMsg(d.error || "Failed."); }
+  }).catch(() => { toggle.disabled = false; showMsg("Control request failed."); });
+});
+
+refresh(); setInterval(refresh, 2500);
 </script>
 </body></html>"""
 
@@ -749,9 +1029,17 @@ def main():
         try:
             dev = DeviceConfig.load(cal_path)
             platform = dev.platform or _infer_platform()
+            configs = load_agent_configs()
+            algorithm = dev.algorithm or "greedy"
             out.update(platform=platform,
                        platform_source=("config" if dev.platform else
                                         "inferred" if platform else "unknown"),
+                       algorithm=algorithm,
+                       algorithm_source="config" if dev.algorithm else "default",
+                       agents_file=AGENT_CONFIG_PATH,
+                       algorithms=[{"name": n, "type": c.get("type", n),
+                                    "description": c.get("description", "")}
+                                   for n, c in configs.items()],
                        pixel_scale=dev.pixel_scale, rack_cells=dev.rack_cells,
                        buttons=dev.buttons)
         except Exception as e:
@@ -785,6 +1073,18 @@ def main():
             return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"})
 
     live_values = {k: v for k, v in LETTER_VALUES.items() if k != ' '}
+
+    @app.route("/device-algorithm", methods=["POST"])
+    def set_device_algorithm():
+        name = (request.json or {}).get("algorithm", "")
+        configs = load_agent_configs()
+        if name not in configs:
+            return jsonify({"ok": False, "error": f"unknown algorithm {name!r}"}), 400
+        dev = DeviceConfig.load(CAL_FILE)
+        dev.algorithm = name
+        dev.save(CAL_FILE)
+        return jsonify({"ok": True, "algorithm": name,
+                        "note": "Applies on the next Start."})
 
     @app.route("/device-control", methods=["GET"])
     def device_control_status():
@@ -843,12 +1143,59 @@ def main():
         resp.headers["Cache-Control"] = "no-store"   # always fetch the latest move
         return resp
 
-    attach_spectator(
+    spec = attach_spectator(
         app, page_route="/sim", state_route="/sim-state",
         agent_specs=(args.a, args.b), dictionary=dictionary,
         delay=args.delay, seed=args.seed, leaderboard_path=args.leaderboard,
         nav_html=NAV,
     )
+
+    @app.route("/arena")
+    def arena():
+        return render_template_string(
+            _ARENA_HTML, nav=NAV, premium=premium_grid(),
+            values=live_values, state_url="/sim-state",
+            agents_file_hint=AGENT_CONFIG_PATH)
+
+    @app.route("/arena-config")
+    def arena_config():
+        configs = load_agent_configs()
+        algorithms = [{"name": n, "type": c.get("type", n),
+                       "description": c.get("description", "")}
+                      for n, c in configs.items()]
+        status = spec.status()
+        sel_a = request.args.get("a") or status["names"][0]
+        sel_b = request.args.get("b") or status["names"][1]
+        board = Leaderboard.load(args.leaderboard)
+        return jsonify({
+            "algorithms": algorithms,
+            "agents_file": AGENT_CONFIG_PATH,
+            "running": status["running"],
+            "current": {"a": status["names"][0], "b": status["names"][1]},
+            "selected": {"a": sel_a, "b": sel_b},
+            "matchup": board.matchup(sel_a, sel_b),
+            "standings": [{"name": n, "rating": round(r.rating, 1), "games": r.games,
+                           "record": f"{r.wins}-{r.losses}-{r.ties}",
+                           "winrate": round(r.winrate * 100, 1)}
+                          for n, r in board.standings()],
+        })
+
+    @app.route("/arena-control", methods=["POST"])
+    def arena_control():
+        d = request.json or {}
+        action = d.get("action")
+        if action == "stop":
+            spec.set_running(False)
+            return jsonify({"ok": True, "running": False})
+        if action == "start":
+            a, b = d.get("a"), d.get("b")
+            configs = load_agent_configs()
+            if a not in configs or b not in configs:
+                return jsonify({"ok": False,
+                                "error": "Pick two configured algorithms."}), 400
+            spec.configure(a, b, start=True)
+            return jsonify({"ok": True, "running": True, "current": {"a": a, "b": b}})
+        return jsonify({"ok": False, "error": "unknown action"}), 400
 
     mount_device_tools(app)
 

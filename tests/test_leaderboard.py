@@ -37,6 +37,31 @@ def test_standings_sorted_by_rating():
     assert names == ["strong", "weak"]
 
 
+def test_head_to_head_tracks_per_pair_and_is_symmetric():
+    b = Leaderboard()
+    b.record_game("greedy", "weak", 400, 200)   # greedy wins
+    b.record_game("weak", "greedy", 350, 300)   # weak wins (sides swapped)
+    b.record_game("greedy", "weak", 300, 300)   # tie
+
+    g = b.matchup("greedy", "weak")
+    assert g == {"games": 3, "wins": 1, "losses": 1, "ties": 1}
+    # Same record, viewed from the other side: wins/losses flip.
+    w = b.matchup("weak", "greedy")
+    assert w == {"games": 3, "wins": 1, "losses": 1, "ties": 1}
+
+
+def test_head_to_head_unknown_pair_is_empty():
+    b = Leaderboard()
+    b.record_game("greedy", "weak", 400, 200)
+    assert b.matchup("greedy", "heuristic") == {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+
+
+def test_self_game_skips_head_to_head():
+    b = Leaderboard()
+    b.record_game("greedy", "greedy", 300, 200)
+    assert b.matchup("greedy", "greedy")["games"] == 0
+
+
 def test_persistence_roundtrip(tmp_path):
     path = str(tmp_path / "lb.json")
     b = Leaderboard()
@@ -48,6 +73,8 @@ def test_persistence_roundtrip(tmp_path):
     assert loaded.agents["greedy"].wins == 1
     assert len(loaded.history) == 2               # one point per agent
     assert loaded.agents["greedy"].rating == b.agents["greedy"].rating
+    # Head-to-head record survives the round trip.
+    assert loaded.matchup("greedy", "weak") == {"games": 1, "wins": 1, "losses": 0, "ties": 0}
 
 
 def test_html_report_is_self_contained(tmp_path):

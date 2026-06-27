@@ -44,6 +44,16 @@ def test_platform_roundtrip_and_preserved_on_blank_save(tmp_path):
     assert reloaded.platform == "android" and reloaded.pixel_scale == 2
 
 
+def test_algorithm_roundtrip_and_preserved_on_blank_save(tmp_path):
+    path = str(tmp_path / "cal.json")
+    DeviceConfig(algorithm="heuristic", pixel_scale=1).save(path)
+    assert DeviceConfig.load(path).algorithm == "heuristic"
+    # A later save that omits algorithm (default "") must not wipe it.
+    DeviceConfig(pixel_scale=2).save(path)
+    reloaded = DeviceConfig.load(path)
+    assert reloaded.algorithm == "heuristic" and reloaded.pixel_scale == 2
+
+
 def test_device_save_preserves_board_geometry(tmp_path):
     path = str(tmp_path / "cal.json")
     Calibration(board_x=27, board_y=800, board_width=1158, board_height=1150).save(path)

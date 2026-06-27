@@ -16,13 +16,15 @@ import os
 
 from dotenv import load_dotenv
 
+from crossplay.client.device_config import DeviceConfig
 from crossplay.client.factory import build_client
 from crossplay.engine.dictionary import Dictionary
 from crossplay.runner import run
-from crossplay.strategy.greedy import GreedyAgent
+from crossplay.strategy.agent_config import build_configured_agent
 
 DICT_PATH = "data/dictionary/nwl23.txt"
 FALLBACK_DICT = "data/sample_words.txt"
+CAL_PATH = "data/calibration/calibration.json"
 
 
 def _load_dictionary(path: str) -> Dictionary:
@@ -33,12 +35,25 @@ def _load_dictionary(path: str) -> Dictionary:
         return Dictionary.load(FALLBACK_DICT)
 
 
+def _select_agent_name(backend: str) -> str:
+    """Which named algorithm profile to play with. Explicit env wins; otherwise a
+    device's saved `algorithm` (from calibration.json); otherwise greedy."""
+    name = os.environ.get("CROSSPLAY_AGENT")
+    if not name and backend == "android":
+        try:
+            name = DeviceConfig.load(CAL_PATH).algorithm
+        except Exception:
+            name = ""
+    return name or "greedy"
+
+
 def main():
     load_dotenv()
     backend = os.environ.get("CROSSPLAY_BACKEND", "ios")
     dictionary = _load_dictionary(DICT_PATH)
-    agent = GreedyAgent(dictionary)
-    print(f"Backend: {backend}   Agent: Greedy")
+    agent_name = _select_agent_name(backend)
+    agent = build_configured_agent(agent_name, dictionary)
+    print(f"Backend: {backend}   Agent: {agent_name}")
 
     client = build_client(backend, dictionary=dictionary)
     run(client, agent)

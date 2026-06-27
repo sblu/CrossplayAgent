@@ -1,0 +1,17 @@
+{
+  "greedy": {
+    "type": "greedy",
+    "description": "Always plays the highest-scoring legal move."
+  },
+  "heuristic": {
+    "type": "heuristic",
+    "params": {
+      "leave_weight": 1.0
+    },
+    "description": "Balances immediate score against rack-leave quality."
+  },
+  "weak": {
+    "type": "weak",
+    "description": "Plays the lowest-scoring move \u2014 a deliberately weak sparring partner."
+  }
+}
