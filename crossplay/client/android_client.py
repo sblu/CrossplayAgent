@@ -167,13 +167,27 @@ class AndroidClient(CrossplayClient):
             game_over=self._game_is_over(),
         )
 
+    def _recall(self) -> None:
+        """Pull staged tiles back to the rack (Android Recall button)."""
+        if self._dev.recall:
+            tap(self._session, *self._dev.recall)
+            time.sleep(1.0)
+
     def play_move(self, move: dict) -> bool:
         if not self._execute_move(move):
+            self._recall()
             return False
         # Wait for the board to register a valid staged move (Play goes dark).
         deadline = time.time() + 6
         while time.time() < deadline and not self._play_enabled():
             time.sleep(0.5)
+        # If the app never enabled Play, the staged tiles don't form a legal move
+        # (e.g. a misread tile) — recall them so the game isn't left stranded and
+        # report failure rather than submitting a dead move.
+        if not self._play_enabled():
+            print("  [!] move not accepted by app — recalling tiles")
+            self._recall()
+            return False
         tap(self._session, *self._dev.submit)
         # Wait for the move to be accepted and the turn to pass, so the next
         # wait_for_turn doesn't catch a stale "Play" and read a transitioning board.
@@ -185,7 +199,9 @@ class AndroidClient(CrossplayClient):
         return True
 
     def pass_turn(self) -> None:
-        # TODO(device): confirm the More→Pass flow on Android (capture via android_dump).
+        # Recall anything staged first so a stray pass doesn't strand tiles, then
+        # open More. TODO(device): tap the Pass row to actually pass.
+        self._recall()
         tap(self._session, *self._dev.more)
 
     # ── Move execution ─────────────────────────────────────────────────────────

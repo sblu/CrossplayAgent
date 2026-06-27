@@ -42,6 +42,7 @@ def run(
     *,
     max_timeouts: int = 3,
     max_moves: int | None = None,
+    max_failures: int = 4,
     write_dashboard: bool = True,
     verbose: bool = True,
 ) -> None:
@@ -49,6 +50,7 @@ def run(
         if verbose:
             print("Connected. Starting game loop...")
         consecutive_timeouts = 0
+        consecutive_failures = 0
         moves_played = 0
 
         while True:
@@ -94,8 +96,17 @@ def run(
                 ok = client.play_move(move)
                 if write_dashboard:
                     _write_dashboard(obs.board, obs.rack, move if ok else {"action": "pass"})
-                if not ok and verbose:
-                    print("Move execution failed.")
+                if ok:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if verbose:
+                        print(f"Move execution failed ({consecutive_failures}/{max_failures}).")
+                    if consecutive_failures >= max_failures:
+                        if verbose:
+                            print("Too many failed moves — exiting.")
+                        break
+                    continue   # retry the turn (tiles recalled) without counting it
 
             moves_played += 1
             if max_moves is not None and moves_played >= max_moves:

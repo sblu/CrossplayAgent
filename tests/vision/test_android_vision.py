@@ -31,6 +31,16 @@ def test_foot_shape_reads_as_L():
     assert _ocr_letter(crop) == "L"
 
 
+def test_wide_top_not_forced_to_I():
+    # A T (wide top bar + stem) must NOT be overridden to I — the thin-bar rule
+    # only applies to genuinely narrow blobs. This is the I-misread-as-T guard's
+    # inverse: don't over-correct.
+    crop = _tile()
+    crop[8:14, 14:46] = 255          # wide top bar
+    crop[8:52, 27:33] = 255          # stem
+    assert _ocr_letter(crop) != "I"
+
+
 def _fill(rgb):
     img = np.zeros((40, 40, 3), dtype=np.uint8)
     img[:, :] = rgb

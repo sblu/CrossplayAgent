@@ -51,12 +51,14 @@ def _ocr_letter(crop: np.ndarray) -> str:
             result = text[:1]
             break
 
-    # I vs L is the one confusable narrow pair: L has a foot (wide aspect ~0.7),
-    # I is a uniform thin bar (~0.23). Decide by shape, not tesseract's guess.
-    if result in ('I', 'L'):
-        result = 'I' if aspect < 0.45 else 'L'
-    elif result == '?' and aspect < 0.35:
-        result = 'I'   # a lone thin bar tesseract failed on is almost always I
+    # Shape override for the narrow letters tesseract confuses. Only I is a thin
+    # uniform vertical bar (~0.23); L has a foot (~0.7), T a wide top bar, J a hook.
+    # So a thin blob is always I — this catches I misread as T (seen in the larger
+    # rack tiles), L, J, or '?'.
+    if aspect < 0.40:
+        result = 'I'
+    elif result in ('I', 'L'):
+        result = 'I' if aspect < 0.48 else 'L'
     return result
 
 

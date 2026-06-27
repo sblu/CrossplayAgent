@@ -57,6 +57,12 @@ class DeviceConfig:
     def keepalive(self) -> tuple[int, int]:
         return tuple(self.buttons.get("keepalive", DEFAULT_BUTTONS["keepalive"]))
 
+    @property
+    def recall(self) -> tuple[int, int] | None:
+        """Recall-tiles button (Android). None if not calibrated for this device."""
+        v = self.buttons.get("recall")
+        return tuple(v) if v else None
+
     @classmethod
     def load(cls, path: str | Path = DEFAULT_PATH) -> "DeviceConfig":
         p = Path(path)
