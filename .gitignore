@@ -33,6 +33,7 @@ data/dictionary/
 # Runtime / debug output
 data/debug/
 data/game_state.json
+data/bot_run.log
 data/calibration/live_screenshot.png
 tools/accessibility_dump.xml
 tools/android_dump.xml

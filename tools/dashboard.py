@@ -13,7 +13,11 @@ Hosts, on a single port:
 import argparse
 import json
 import os
+import shutil
+import signal
+import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -31,6 +35,105 @@ from crossplay.vision.calibration import Calibration
 from crossplay.web.spectator import AGENTS, attach_spectator, premium_grid
 
 GAME_STATE_PATH = Path("data/game_state.json")
+CAL_FILE = "data/calibration/calibration.json"
+_BOT_LOG = Path("data/bot_run.log")
+
+# Bot subprocess control — the live view can start/stop the Android game loop.
+_bot = {"proc": None}
+
+
+def _bot_running() -> bool:
+    p = _bot["proc"]
+    return p is not None and p.poll() is None
+
+
+def _infer_platform() -> str:
+    """Best-guess device platform from the environment when the config doesn't
+    record one: an Android UDID means Android; iOS UDID/bundle means iOS."""
+    if os.environ.get("ANDROID_DEVICE_UDID") or os.environ.get("ANDROID_APP_PACKAGE"):
+        return "android"
+    if os.environ.get("DEVICE_UDID") or os.environ.get("BUNDLE_ID"):
+        return "ios"
+    backend = os.environ.get("CROSSPLAY_BACKEND", "")
+    return backend if backend in ("android", "ios") else ""
+
+
+def _adb_path():
+    adb = shutil.which("adb")
+    if adb:
+        return adb
+    home = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if home:
+        cand = Path(home) / "platform-tools" / "adb"
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def _appium_reachable() -> bool:
+    host = os.environ.get("APPIUM_HOST", "127.0.0.1")
+    port = os.environ.get("APPIUM_PORT", "4723")
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/status", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _check_device_connection():
+    """Preflight before starting the bot. Returns (ok, reason).
+
+    Mirrors what AndroidDriver needs: an adb-visible device (matching the
+    configured UDID, if any) and a reachable Appium server.
+    """
+    adb = _adb_path()
+    if not adb:
+        return False, "adb not found (install Android platform-tools / set ANDROID_HOME)."
+    try:
+        out = subprocess.run([adb, "devices"], capture_output=True, text=True,
+                             timeout=8).stdout
+    except Exception as e:
+        return False, f"adb error: {e}"
+    devices = [ln.split()[0] for ln in out.splitlines()[1:]
+               if ln.strip().endswith("device")]
+    if not devices:
+        return False, "No Android device detected by adb."
+    udid = os.environ.get("ANDROID_DEVICE_UDID")
+    if udid and udid not in devices:
+        return False, f"Configured device {udid} not connected (adb sees {devices})."
+    if not _appium_reachable():
+        host = os.environ.get("APPIUM_HOST", "127.0.0.1")
+        port = os.environ.get("APPIUM_PORT", "4723")
+        return False, f"Appium server not reachable at {host}:{port}. Start it with `appium`."
+    return True, devices[0]
+
+
+def _start_bot() -> None:
+    if _bot_running():
+        return
+    _BOT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log = open(_BOT_LOG, "w")
+    env = dict(os.environ, CROSSPLAY_BACKEND="android")
+    _bot["proc"] = subprocess.Popen(
+        [sys.executable, "main.py"], cwd=str(PROJECT_ROOT),
+        env=env, stdout=log, stderr=subprocess.STDOUT)
+
+
+def _stop_bot() -> None:
+    p = _bot["proc"]
+    if p is None or p.poll() is not None:
+        return
+    # SIGINT lets main.py's `with client:` run __exit__ → driver.quit() (clean
+    # Appium teardown); fall back to kill if it doesn't exit promptly.
+    try:
+        p.send_signal(signal.SIGINT)
+        p.wait(timeout=8)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    _bot["proc"] = None
 
 # Shared top nav injected into the views we own.
 NAV = """
@@ -77,8 +180,6 @@ _LANDING = """<!doctype html>
         <p>Watch simulated games play out move-by-move, app-styled board.</p></a>
       <a class="card" href="/leaderboard"><h3>Leaderboard →</h3>
         <p>Self-play standings, Elo, and progress charts.</p></a>
-      <a class="card" href="/device-live"><h3>Live Phone →</h3>
-        <p>Mirror the real phone game as the bot plays it.</p></a>
     </div>
   </div>
 
@@ -90,11 +191,11 @@ _LANDING = """<!doctype html>
         <p>Capture per-letter OCR templates.</p></a>
       <a class="card" href="/device-setup"><h3>Device Setup →</h3>
         <p>Calibrate board, rack &amp; buttons from a screenshot (iOS or Android).</p></a>
-      <a class="card" href="/live"><h3>Live Device Board →</h3>
-        <p>Mirror a real game via data/game_state.json.</p></a>
+      <a class="card" href="/device-live"><h3>Live Phone →</h3>
+        <p>Mirror the real phone game move-by-move — board, scores &amp; play history.</p></a>
     </div>
     <p class="note">Device Setup works from an uploaded screenshot — no live device
-      needed. The Inspector/Calibration/Live tools need a connected iPhone + Appium.</p>
+      needed. The Inspector/Calibration tools need a connected device + Appium.</p>
   </div>
 </div></body></html>"""
 
@@ -278,8 +379,25 @@ _DEVICE_LIVE_HTML = r"""<!doctype html>
          margin: 0; padding: 1rem; color: #222; display: flex; flex-direction: column;
          align-items: center; }
   .wrap { width: min(96vw, 460px); }
-  .status { text-align: center; margin: .7rem 0 .3rem; font-size: 1.05rem; min-height: 1.2em; }
+  .scores { display: flex; justify-content: space-between; align-items: center;
+            background: #fff; border-radius: 14px; padding: .7rem 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .player { text-align: center; flex: 1; }
+  .player .name { font-size: .8rem; color: #888; }
+  .player .pts { font-size: 1.6rem; font-weight: 700; }
+  #pbot .name { color: var(--tile); font-weight: 600; }
+  .vs { color: #bbb; font-weight: 600; padding: 0 .6rem; }
+  .status { text-align: center; margin: .7rem 0 .2rem; font-size: 1.05rem;
+            min-height: 1.3em; display: flex; align-items: center;
+            justify-content: center; gap: .5rem; }
   .status b { color: #111; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--tile-new);
+         flex: 0 0 auto; animation: pulse 1.1s ease-in-out infinite; }
+  .dot.idle { background: #bbb; animation: none; }
+  @keyframes pulse { 0%,100% { opacity: .25; transform: scale(.8); }
+                     50% { opacity: 1; transform: scale(1.15); } }
+  .substatus { text-align: center; color: #888; font-size: .8rem; min-height: 1em;
+               margin-bottom: .1rem; }
   .meta { text-align: center; color: #999; font-size: .75rem; margin-bottom: .6rem; }
   .board { display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px;
            background: var(--line); border: 2px solid var(--line); border-radius: 8px;
@@ -305,15 +423,71 @@ _DEVICE_LIVE_HTML = r"""<!doctype html>
            font-weight: 700; position: relative; font-size: clamp(11px, 3.4vw, 20px); }
   .rtile.empty { background: #2c3d3d; }
   .rtile .v { position: absolute; right: 3px; bottom: 1px; font-size: .55em; }
+  .history { margin-top: 1rem; background: #fff; border-radius: 12px;
+             box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow: hidden; }
+  .history .hlbl { font-size: .75rem; color: #999; text-transform: uppercase;
+                   letter-spacing: .04em; padding: .6rem .9rem .3rem; }
+  .hlist { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
+  .hrow { display: flex; align-items: center; gap: .6rem; padding: .45rem .9rem;
+          border-top: 1px solid #f0f0ea; font-size: .9rem; }
+  .hrow .who { font-size: .7rem; font-weight: 700; text-transform: uppercase;
+               border-radius: 5px; padding: .1rem .4rem; min-width: 64px; text-align: center; }
+  .hrow.bot .who { background: #e7ecf9; color: var(--tile); }
+  .hrow.opp .who { background: #f1efe7; color: #9a7b1e; }
+  .hrow .hw { flex: 1; font-weight: 600; letter-spacing: .02em; }
+  .hrow .hs { font-weight: 700; color: #444; }
+  .hempty { padding: .8rem .9rem; color: #aaa; font-size: .85rem; }
+  .control { display: flex; align-items: center; gap: .7rem; margin: .2rem 0 .6rem;
+             background: #fff; border-radius: 12px; padding: .6rem .8rem;
+             box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .toggle { border: 0; border-radius: 8px; padding: .55rem 1.1rem; font-weight: 700;
+            font-size: .9rem; cursor: pointer; color: #fff; background: #2faa6a; }
+  .toggle.on { background: #d2483f; }
+  .toggle:disabled { opacity: .55; cursor: default; }
+  .control .clbl { font-size: .85rem; color: #666; flex: 1; }
+  .control .clbl b { color: #222; }
+  .msg { border-radius: 10px; padding: .7rem .9rem; font-size: .85rem; margin-bottom: .6rem; }
+  .msg.info { background: #eef3fb; color: #3a4b6b; }
+  .msg.error { background: #fcecea; color: #9a2b22; }
+  .msg ul { margin: .4rem 0 0; padding-left: 1.1rem; } .msg li { margin: .15rem 0; }
+  .msg.hidden { display: none; }
+  .cfg { margin-top: 1rem; background: #fff; border-radius: 12px;
+         box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow: hidden; }
+  .cfg summary { cursor: pointer; padding: .7rem .9rem; font-size: .8rem;
+                 color: #555; text-transform: uppercase; letter-spacing: .04em;
+                 font-weight: 700; }
+  .cfg .cfgbody { padding: 0 .9rem .8rem; font-size: .82rem; color: #444; }
+  .cfg .file { font-family: ui-monospace, Menlo, monospace; color: #3f5bb0;
+               background: #f4f4ef; border-radius: 5px; padding: .15rem .4rem; }
+  .cfg table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+  .cfg td { padding: .2rem .3rem; border-top: 1px solid #f0f0ea; vertical-align: top; }
+  .cfg td.k { color: #888; white-space: nowrap; width: 1%; padding-right: 1rem; }
+  .cfg code { font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
 </style>
 </head>
 <body>
 <div class="wrap">
   {{ nav | safe }}
-  <div class="status" id="status">Waiting for the phone…</div>
+  <div class="control">
+    <button class="toggle" id="toggle" disabled>…</button>
+    <div class="clbl" id="clbl">Checking bot status…</div>
+  </div>
+  <div class="msg hidden" id="msg"></div>
+  <div class="scores">
+    <div class="player" id="pbot"><div class="name">Bot</div><div class="pts">0</div></div>
+    <div class="vs">vs</div>
+    <div class="player" id="popp"><div class="name">Opponent</div><div class="pts">0</div></div>
+  </div>
+  <div class="status" id="status"><span class="dot idle"></span>Waiting for the phone…</div>
+  <div class="substatus" id="substatus"></div>
   <div class="meta" id="meta"></div>
   <div class="board" id="board"></div>
   <div class="rack" id="rack"><div class="lbl">Bot rack</div><div class="rtiles"></div></div>
+  <div class="history" id="history"><div class="hlbl">Plays</div><div class="hlist"></div></div>
+  <details class="cfg" id="cfg">
+    <summary>Device configuration</summary>
+    <div class="cfgbody" id="cfgbody">Loading…</div>
+  </details>
 </div>
 <script>
 const STATE_URL = {{ state_url | tojson }};
@@ -349,20 +523,48 @@ function lastCells(m) {
   return out;
 }
 
+let botRunning = false;
+
 function render(s) {
   if (!s.ready) {
-    document.getElementById("status").innerHTML =
-      "<b>Waiting for the phone…</b> Start an autonomous Android game.";
+    const txt = botRunning
+      ? '<span class="dot"></span><span>Bot starting — waiting for the game…</span>'
+      : '<span class="dot idle"></span><span>No active game — connect the phone and press Start.</span>';
+    document.getElementById("status").innerHTML = txt;
+    document.getElementById("substatus").textContent = "";
     document.getElementById("meta").textContent = "";
     return;
   }
+  const sc = s.scores || {};
+  document.querySelector("#pbot .pts").textContent = sc.bot != null ? sc.bot : 0;
+  document.querySelector("#popp .pts").textContent = sc.opponent != null ? sc.opponent : 0;
+
   const m = s.last_move;
-  let status = "Live phone game";
-  if (m && m.action === "pass") status = "Bot passed";
-  else if (m && m.word) status = `Last play: <b>${m.word}</b>` +
-    (m.score != null ? ` for ${m.score}` : "");
-  document.getElementById("status").innerHTML = status;
+  // The bot's current step (waiting / thinking / placing …) drives the headline.
+  const phase = (s.phase || "").trim() || "Live phone game";
+  const idle = /game over|waiting for the phone/i.test(phase);
+  document.getElementById("status").innerHTML =
+    `<span class="dot${idle ? " idle" : ""}"></span><span>${phase}</span>`;
+
+  // The most recent completed play sits underneath as context.
+  let sub = "";
+  if (m && m.action === "pass") sub = "Last: passed";
+  else if (m && m.word) sub = `Last play: ${m.word}` +
+    (m.score != null ? ` · ${m.score} pts` : "");
+  document.getElementById("substatus").textContent = sub;
   document.getElementById("meta").textContent = s.timestamp ? "updated " + s.timestamp : "";
+
+  const hist = s.history || [];
+  let hh = "";
+  for (let i = hist.length - 1; i >= 0; i--) {          // newest at the top
+    const e = hist[i];
+    const cls = e.player === "Bot" ? "bot" : "opp";
+    const score = e.score == null ? "" : e.score;
+    hh += `<div class="hrow ${cls}"><span class="who">${e.player}</span>`
+        + `<span class="hw">${e.word}</span><span class="hs">${score}</span></div>`;
+  }
+  document.querySelector("#history .hlist").innerHTML =
+    hh || '<div class="hempty">No plays yet</div>';
 
   const news = new Set(lastCells(m).map(b => b[0] + "," + b[1]));
   for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
@@ -397,6 +599,90 @@ function poll() {
 }
 poll();
 setInterval(poll, 1500);
+
+// ── Bot start/stop control ──────────────────────────────────────────────
+const toggleBtn = document.getElementById("toggle");
+const clbl = document.getElementById("clbl");
+const msgEl = document.getElementById("msg");
+
+function showMsg(kind, html) {
+  msgEl.className = "msg " + kind;
+  msgEl.innerHTML = html;
+}
+function hideMsg() { msgEl.className = "msg hidden"; }
+
+function setRunning(running) {
+  botRunning = running;
+  toggleBtn.disabled = false;
+  toggleBtn.textContent = running ? "Stop bot" : "Start bot";
+  toggleBtn.classList.toggle("on", running);
+  clbl.innerHTML = running
+    ? "Bot is <b>running</b> — playing the game on the phone."
+    : "Bot is <b>stopped</b>. Connect the phone, open the game, then Start.";
+}
+
+function refreshControl() {
+  fetch("/device-control").then(r => r.json())
+    .then(d => setRunning(!!d.running)).catch(() => {});
+}
+
+toggleBtn.addEventListener("click", () => {
+  const action = botRunning ? "stop" : "start";
+  toggleBtn.disabled = true;
+  toggleBtn.textContent = action === "start" ? "Starting…" : "Stopping…";
+  hideMsg();
+  fetch("/device-control", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) {
+      setRunning(!!d.running);
+      if (action === "start")
+        showMsg("info", "Bot started. Make sure the Crossplay game is open on your turn.");
+      else hideMsg();
+    } else {
+      setRunning(false);
+      let html = "<b>Can't reach the phone.</b> " + (d.error || "");
+      if (d.help && d.help.length)
+        html += "<ul>" + d.help.map(h => "<li>" + h + "</li>").join("") + "</ul>";
+      showMsg("error", html);
+    }
+  }).catch(() => { setRunning(false); showMsg("error", "Control request failed."); });
+});
+
+refreshControl();
+setInterval(refreshControl, 3000);
+
+// ── Device configuration panel ──────────────────────────────────────────
+function renderConfig(c) {
+  const body = document.getElementById("cfgbody");
+  if (c.error && c.pixel_scale == null) {
+    body.innerHTML = `Stored in <span class="file">${c.path}</span><br>` +
+      `<span style="color:#9a2b22">${c.exists ? c.error : "Not calibrated yet — use Device Setup."}</span>`;
+    return;
+  }
+  const b = c.board || {};
+  const btns = Object.entries(c.buttons || {})
+    .map(([k, v]) => `${k}: [${v}]`).join(", ");
+  const plat = c.platform
+    ? c.platform.charAt(0).toUpperCase() + c.platform.slice(1)
+    : "Unknown";
+  const platNote = c.platform_source === "inferred" ? " (inferred from environment)"
+                 : c.platform_source === "unknown" ? " — set it in Device Setup" : "";
+  body.innerHTML =
+    `Stored in <span class="file">${c.path}</span>` +
+    `<table>` +
+    `<tr><td class="k">platform</td><td><code>${plat}</code>` +
+      `<span style="color:#999">${platNote}</span></td></tr>` +
+    `<tr><td class="k">pixel scale</td><td><code>${c.pixel_scale}</code></td></tr>` +
+    `<tr><td class="k">board</td><td><code>x ${b.board_x}, y ${b.board_y}, ` +
+      `${b.board_width}×${b.board_height}, grid ${b.grid_size}</code></td></tr>` +
+    `<tr><td class="k">rack cells</td><td><code>${(c.rack_cells||[]).length} cells</code></td></tr>` +
+    `<tr><td class="k">buttons</td><td><code>${btns}</code></td></tr>` +
+    `</table>`;
+}
+fetch("/device-config").then(r => r.json()).then(renderConfig)
+  .catch(() => { document.getElementById("cfgbody").textContent = "Failed to load config."; });
 </script>
 </body></html>"""
 
@@ -419,6 +705,12 @@ def mount_device_tools(app) -> bool:
 
 
 def main():
+    try:                       # load .env so the device preflight sees APPIUM_*/UDID
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
     p = argparse.ArgumentParser(description="Unified Crossplay dashboard")
     p.add_argument("--a", default="greedy", choices=list(AGENTS))
     p.add_argument("--b", default="weak", choices=list(AGENTS))
@@ -452,10 +744,18 @@ def main():
 
     @app.route("/device-config", methods=["GET"])
     def get_device_config():
-        cal_path = "data/calibration/calibration.json"
-        dev = DeviceConfig.load(cal_path)
-        out = {"pixel_scale": dev.pixel_scale, "rack_cells": dev.rack_cells,
-               "buttons": dev.buttons}
+        cal_path = CAL_FILE
+        out = {"path": cal_path, "exists": Path(cal_path).exists()}
+        try:
+            dev = DeviceConfig.load(cal_path)
+            platform = dev.platform or _infer_platform()
+            out.update(platform=platform,
+                       platform_source=("config" if dev.platform else
+                                        "inferred" if platform else "unknown"),
+                       pixel_scale=dev.pixel_scale, rack_cells=dev.rack_cells,
+                       buttons=dev.buttons)
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {e}"
         try:
             cal = Calibration.load(cal_path)
             out["board"] = {"board_x": cal.board_x, "board_y": cal.board_y,
@@ -467,7 +767,7 @@ def main():
 
     @app.route("/device-config", methods=["POST"])
     def save_device_config():
-        cal_path = "data/calibration/calibration.json"
+        cal_path = CAL_FILE
         try:
             d = request.json
             b = d["board"]
@@ -475,6 +775,7 @@ def main():
                         board_width=int(b["board_width"]), board_height=int(b["board_height"]),
                         grid_size=int(b.get("grid_size", 15))).save_merged(cal_path)
             DeviceConfig(
+                platform=str(d.get("platform", "")),
                 pixel_scale=int(d["pixel_scale"]),
                 rack_cells=[[int(v) for v in cell] for cell in d["rack_cells"]],
                 buttons={k: [int(v) for v in xy] for k, xy in d["buttons"].items()},
@@ -484,6 +785,34 @@ def main():
             return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"})
 
     live_values = {k: v for k, v in LETTER_VALUES.items() if k != ' '}
+
+    @app.route("/device-control", methods=["GET"])
+    def device_control_status():
+        return jsonify({"running": _bot_running()})
+
+    @app.route("/device-control", methods=["POST"])
+    def device_control():
+        action = (request.json or {}).get("action")
+        if action == "stop":
+            _stop_bot()
+            return jsonify({"ok": True, "running": False})
+        if action == "start":
+            if _bot_running():
+                return jsonify({"ok": True, "running": True})
+            ok, reason = _check_device_connection()
+            if not ok:
+                return jsonify({"ok": False, "running": False, "error": reason,
+                                "help": [
+                                    "Connect the phone over USB.",
+                                    "Enable Developer Options and turn on USB debugging.",
+                                    "Accept the 'Allow USB debugging' prompt on the phone.",
+                                    "Confirm with `adb devices`.",
+                                    "Start Appium with `appium`.",
+                                    "Open the Crossplay game on the phone, on your turn.",
+                                ]})
+            _start_bot()
+            return jsonify({"ok": True, "running": True})
+        return jsonify({"ok": False, "error": "unknown action"}), 400
 
     @app.route("/device-live")
     def device_live():
@@ -495,18 +824,24 @@ def main():
     @app.route("/device-live-state")
     def device_live_state():
         if not GAME_STATE_PATH.exists():
-            return jsonify({"ready": False})
-        try:
-            data = json.loads(GAME_STATE_PATH.read_text())
-        except (ValueError, OSError):
-            return jsonify({"ready": False})
-        return jsonify({
-            "ready": True,
-            "board": data.get("board", [["" for _ in range(15)] for _ in range(15)]),
-            "rack": data.get("rack", []),
-            "last_move": data.get("last_move"),
-            "timestamp": data.get("timestamp"),
-        })
+            resp = jsonify({"ready": False})
+        else:
+            try:
+                data = json.loads(GAME_STATE_PATH.read_text())
+                resp = jsonify({
+                    "ready": True,
+                    "board": data.get("board", [["" for _ in range(15)] for _ in range(15)]),
+                    "rack": data.get("rack", []),
+                    "last_move": data.get("last_move"),
+                    "scores": data.get("scores", {}),
+                    "history": data.get("history", []),
+                    "phase": data.get("phase", ""),
+                    "timestamp": data.get("timestamp"),
+                })
+            except (ValueError, OSError):
+                resp = jsonify({"ready": False})
+        resp.headers["Cache-Control"] = "no-store"   # always fetch the latest move
+        return resp
 
     attach_spectator(
         app, page_route="/sim", state_route="/sim-state",

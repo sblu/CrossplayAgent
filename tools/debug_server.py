@@ -355,27 +355,9 @@ def save_templates():
                         "detail": traceback.format_exc()})
 
 
-# ── Live board routes ─────────────────────────────────────────────────────────
-
-GAME_STATE_PATH = PROJECT_ROOT / "data" / "game_state.json"
-
-
-@app.route("/live")
-def live_page():
-    return render_template_string(LIVE_HTML)
-
-
-@app.route("/live-state")
-def live_state():
-    try:
-        if not GAME_STATE_PATH.exists():
-            return jsonify({"ready": False})
-        data = json.loads(GAME_STATE_PATH.read_text())
-        data["ready"] = True
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"ready": False, "error": str(e)})
-
+# The live board view now lives in the unified dashboard at /device-live
+# (tools/dashboard.py) — a superset with scores and play history. The old dark
+# /live page that used to live here has been removed.
 
 # ── HTML templates ─────────────────────────────────────────────────────────────
 
@@ -475,9 +457,7 @@ INSPECTOR_HTML = """<!DOCTYPE html>
 <nav style="margin-bottom:24px;display:flex;gap:12px">
   <a href="/" style="color:#12121e;background:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px;font-weight:bold">Inspector</a>
   <a href="/templates" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Template Capture</a>
-  <a href="/calibrate" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Calibrate</a>
-  <a href="/live" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Live Board</a>
-</nav>
+  <a href="/calibrate" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Calibrate</a></nav>
 <h1>Crossplay Inspector</h1>
 <div class="controls">
   <button id="capture-btn" onclick="captureFromPhone()">Capture from Phone</button>
@@ -808,9 +788,7 @@ TEMPLATES_HTML = """<!DOCTYPE html>
 <nav style="margin-bottom:24px;display:flex;gap:12px">
   <a href="/" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Inspector</a>
   <a href="/templates" style="color:#12121e;background:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px;font-weight:bold">Template Capture</a>
-  <a href="/calibrate" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Calibrate</a>
-  <a href="/live" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Live Board</a>
-</nav>
+  <a href="/calibrate" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Calibrate</a></nav>
 
 <h1>Board Template Capture</h1>
 
@@ -1041,9 +1019,7 @@ CALIBRATE_HTML = """<!DOCTYPE html>
 <nav style="margin-bottom:24px;display:flex;gap:12px">
   <a href="/" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Inspector</a>
   <a href="/templates" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Template Capture</a>
-  <a href="/calibrate" style="color:#12121e;background:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px;font-weight:bold">Calibrate</a>
-  <a href="/live" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Live Board</a>
-</nav>
+  <a href="/calibrate" style="color:#12121e;background:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px;font-weight:bold">Calibrate</a></nav>
 
 <h1>Board Calibration</h1>
 
@@ -1233,246 +1209,10 @@ async function saveCalibration() {
 </html>"""
 
 
-LIVE_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Crossplay — Live Board</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Courier New', monospace; background: #12121e; color: #dde; padding: 24px; }
-  h1 { color: #4ecca3; font-size: 20px; margin-bottom: 4px; letter-spacing: 1px; }
-  #subtitle { font-size: 12px; color: #446; margin-bottom: 20px; }
-  #status-bar { font-size: 13px; color: #7ec; margin-bottom: 16px; min-height: 20px; }
-  .layout { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start; }
-
-  /* Board */
-  .board-wrap { flex: 0 0 auto; }
-  .board-grid { display: inline-block; border: 2px solid #2a6040; border-radius: 4px; }
-  .board-row { display: flex; }
-  .sq {
-    width: 36px; height: 36px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 15px; font-weight: bold;
-    border: 1px solid #1a2a22;
-    position: relative;
-    transition: background 0.15s;
-  }
-  .sq-label {
-    font-size: 7px; font-weight: normal; position: absolute;
-    top: 2px; left: 0; right: 0; text-align: center;
-    letter-spacing: 0;
-  }
-  /* Premium square types */
-  .sq.TW  { background: #5a1a1a; color: #ff8080; }
-  .sq.DW  { background: #3a1520; color: #ff80b0; }
-  .sq.TL  { background: #0e2a4a; color: #80b0ff; }
-  .sq.DL  { background: #0e1e3a; color: #80c8ff; }
-  .sq.NM  { background: #141a18; }
-  /* Tile placed */
-  .sq.tile { background: #2a4030 !important; color: #f0e060 !important; font-size: 16px; border-color: #3a6050; }
-  .sq.tile.last-move { background: #1a5030 !important; border-color: #4ecca3; box-shadow: inset 0 0 0 2px #4ecca3; }
-
-  /* Rack */
-  .sidebar { flex: 1; min-width: 220px; }
-  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #4ecca3; margin-bottom: 10px; }
-  .section { margin-bottom: 24px; }
-  .rack { display: flex; gap: 7px; flex-wrap: wrap; }
-  .rack-tile { width: 42px; height: 42px; border-radius: 5px; display: flex; align-items: center;
-    justify-content: center; font-size: 20px; font-weight: bold;
-    border: 2px solid #4ecca3; background: #1e3a5a; color: #fff; }
-  .rack-tile.empty { border-color: #223; background: #1a1a26; color: #334; }
-
-  /* Move info */
-  #move-box { background: #1a1a2e; border: 1px solid #2a3a5a; border-radius: 6px;
-    padding: 14px; font-size: 13px; line-height: 2; }
-  #move-box .word { font-size: 22px; font-weight: bold; color: #4ecca3; letter-spacing: 2px; }
-  #move-box .info { color: #aac; }
-  #move-box .pass { color: #e05570; font-style: italic; }
-  #waiting { color: #446; font-style: italic; }
-
-  /* Legend */
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  .leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #668; }
-  .leg-sq { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; }
-</style>
-</head>
-<body>
-<nav style="margin-bottom:24px;display:flex;gap:12px">
-  <a href="/" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Inspector</a>
-  <a href="/templates" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Template Capture</a>
-  <a href="/calibrate" style="color:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px">Calibrate</a>
-  <a href="/live" style="color:#12121e;background:#4ecca3;text-decoration:none;padding:6px 14px;border:1px solid #4ecca3;border-radius:4px;font-size:13px;font-weight:bold">Live Board</a>
-</nav>
-<h1>Live Board</h1>
-<div id="subtitle">Auto-refreshes every 2 seconds while the bot is running.</div>
-<div id="status-bar">Waiting for bot to start...</div>
-
-<div class="layout">
-  <div class="board-wrap">
-    <div class="board-grid" id="board-grid"></div>
-    <div class="legend">
-      <div class="leg"><div class="leg-sq" style="background:#5a1a1a"></div>Triple Word</div>
-      <div class="leg"><div class="leg-sq" style="background:#3a1520"></div>Double Word</div>
-      <div class="leg"><div class="leg-sq" style="background:#0e2a4a"></div>Triple Letter</div>
-      <div class="leg"><div class="leg-sq" style="background:#0e1e3a"></div>Double Letter</div>
-    </div>
-  </div>
-  <div class="sidebar">
-    <div class="section">
-      <h2>Rack</h2>
-      <div class="rack" id="rack-display"></div>
-    </div>
-    <div class="section">
-      <h2>Last Move</h2>
-      <div id="move-box"><span id="waiting">Waiting for first move...</span></div>
-    </div>
-    <div class="section">
-      <h2>Updated</h2>
-      <div id="ts" style="font-size:13px;color:#668">—</div>
-    </div>
-  </div>
-</div>
-
-<script>
-// Premium square map: key = "row,col" → type string
-const SQUARE_TYPES = {};
-const TW = [[0,3],[0,11],[3,0],[3,14],[11,0],[11,14],[14,3],[14,11]];
-const DW = [[1,1],[1,13],[3,7],[11,7],[7,3],[7,11],[13,1],[13,13]];
-const TL = [[0,0],[0,14],[1,6],[1,8],[4,5],[4,9],[5,4],[5,10],[6,1],[6,13],
-            [8,1],[8,13],[9,4],[9,10],[10,5],[10,9],[13,6],[13,8],[14,0],[14,14]];
-const DL = [[0,7],[14,7],[2,4],[2,10],[3,3],[3,11],[4,2],[4,12],[5,7],[9,7],
-            [7,0],[7,14],[7,5],[7,9],[10,2],[10,12],[11,3],[11,11],[12,4],[12,10]];
-
-for (const [r,c] of TW) SQUARE_TYPES[r+','+c] = 'TW';
-for (const [r,c] of DW) SQUARE_TYPES[r+','+c] = 'DW';
-for (const [r,c] of TL) SQUARE_TYPES[r+','+c] = 'TL';
-for (const [r,c] of DL) SQUARE_TYPES[r+','+c] = 'DL';
-
-const SQ_LABELS = { TW: '3W', DW: '2W', TL: '3L', DL: '2L' };
-
-let lastTimestamp = null;
-
-function buildEmptyBoard() {
-  const grid = document.getElementById('board-grid');
-  grid.innerHTML = '';
-  for (let r = 0; r < 15; r++) {
-    const row = document.createElement('div');
-    row.className = 'board-row';
-    for (let c = 0; c < 15; c++) {
-      const key = r + ',' + c;
-      const typ = SQUARE_TYPES[key] || 'NM';
-      const sq = document.createElement('div');
-      sq.className = 'sq ' + typ;
-      sq.id = 'sq-' + r + '-' + c;
-      if (typ !== 'NM') {
-        const lbl = document.createElement('div');
-        lbl.className = 'sq-label';
-        lbl.textContent = SQ_LABELS[typ];
-        sq.appendChild(lbl);
-      }
-      row.appendChild(sq);
-    }
-    grid.appendChild(row);
-  }
-}
-
-function renderBoard(board, lastMove) {
-  // Collect last-move tile positions
-  const lastCells = new Set();
-  if (lastMove && lastMove.word) {
-    const { word, row, col, horizontal, tiles_played } = lastMove;
-    if (tiles_played) {
-      for (const idx of tiles_played) {
-        const r = horizontal ? row : row + idx;
-        const c = horizontal ? col + idx : col;
-        lastCells.add(r + ',' + c);
-      }
-    }
-  }
-
-  for (let r = 0; r < 15; r++) {
-    for (let c = 0; c < 15; c++) {
-      const sq = document.getElementById('sq-' + r + '-' + c);
-      if (!sq) continue;
-      const key = r + ',' + c;
-      const typ = SQUARE_TYPES[key] || 'NM';
-      const letter = board[r][c];
-      // Reset
-      sq.className = 'sq ' + typ;
-      // Remove old label if re-adding
-      while (sq.firstChild) sq.removeChild(sq.firstChild);
-      if (letter) {
-        sq.classList.add('tile');
-        if (lastCells.has(key)) sq.classList.add('last-move');
-        sq.textContent = letter;
-      } else if (typ !== 'NM') {
-        sq.classList.remove('tile');
-        const lbl = document.createElement('div');
-        lbl.className = 'sq-label';
-        lbl.textContent = SQ_LABELS[typ];
-        sq.appendChild(lbl);
-      }
-    }
-  }
-}
-
-function renderRack(rack) {
-  const el = document.getElementById('rack-display');
-  el.innerHTML = (rack || []).map(l =>
-    '<div class="rack-tile ' + (l ? '' : 'empty') + '">' + (l || '') + '</div>'
-  ).join('');
-}
-
-function renderMove(lastMove) {
-  const box = document.getElementById('move-box');
-  if (!lastMove) { box.innerHTML = '<span id="waiting">Waiting for first move...</span>'; return; }
-  if (lastMove.action === 'pass') {
-    box.innerHTML = '<div class="pass">Passed this turn</div>';
-    return;
-  }
-  const dir = lastMove.horizontal ? 'horizontal' : 'vertical';
-  box.innerHTML =
-    '<div class="word">' + (lastMove.word || '?') + '</div>' +
-    '<div class="info">Row ' + lastMove.row + ', Col ' + lastMove.col + ' · ' + dir + '</div>' +
-    '<div class="info">Score: <strong style="color:#4ecca3">' + (lastMove.score || 0) + '</strong></div>';
-}
-
-async function poll() {
-  try {
-    const resp = await fetch('/live-state');
-    const data = await resp.json();
-    if (!data.ready) {
-      document.getElementById('status-bar').textContent = 'Waiting for bot to write state...';
-      return;
-    }
-    document.getElementById('status-bar').textContent =
-      'Live · last update ' + (data.timestamp || '?');
-    document.getElementById('ts').textContent = data.timestamp || '—';
-    if (data.timestamp !== lastTimestamp) {
-      lastTimestamp = data.timestamp;
-      renderBoard(data.board, data.last_move);
-      renderRack(data.rack);
-      renderMove(data.last_move);
-    }
-  } catch (e) {
-    document.getElementById('status-bar').textContent = 'Poll error: ' + e.message;
-  }
-}
-
-buildEmptyBoard();
-poll();
-setInterval(poll, 2000);
-</script>
-</body>
-</html>"""
-
-
 if __name__ == "__main__":
     print("Crossplay debug server running:")
     print("  Inspector:         http://localhost:8765")
     print("  Template Capture:  http://localhost:8765/templates")
     print("  Calibration:       http://localhost:8765/calibrate")
-    print("  Live Board:        http://localhost:8765/live")
     print("Press Ctrl+C to stop.")
     app.run(debug=False, port=8765, threaded=True)

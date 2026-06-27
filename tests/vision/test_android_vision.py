@@ -6,7 +6,8 @@ cells, since that's the part that's pure logic and easy to regress.
 """
 import numpy as np
 
-from crossplay.vision.android_vision import _has_tile, _ocr_letter
+from crossplay.vision.android_vision import (
+    _detect_rack_tiles, _has_tile, _ocr_letter, find_modal_close)
 
 
 def _tile(rgb=(70, 95, 180)):
@@ -47,6 +48,46 @@ def test_wide_top_not_forced_to_I():
     crop[8:14, 14:46] = 255          # wide top bar
     crop[8:52, 27:33] = 255          # stem
     assert _ocr_letter(crop) != "I"
+
+
+def test_modal_close_detected_on_dimmed_board():
+    # A modal is up: board dimmed to dark grey, a centered pure-white card with a
+    # dark X in its top-right. find_modal_close must return a tap target inside
+    # that X region.
+    img = np.full((2404, 1080, 3), 96, dtype=np.uint8)     # dimmed board
+    img[1065:1411, 150:929] = 255                          # white modal card
+    img[1085:1150, 880:930] = 40                           # dark close X glyph
+    pt = find_modal_close(img)
+    assert pt is not None
+    x, y = pt
+    assert 860 <= x <= 935 and 1065 <= y <= 1170
+
+
+def test_no_modal_on_normal_board():
+    # A normal board with cream cells (~245) and no white card must NOT be seen as
+    # a modal — cream stays below the pure-white threshold.
+    img = np.full((2404, 1080, 3), 245, dtype=np.uint8)    # cream board, no overlay
+    assert find_modal_close(img) is None
+
+
+def test_centered_partial_rack_detected_by_position():
+    # The app centers a partial rack instead of left-aligning it. Detection must
+    # find the tiles by their actual blue blobs (not fixed cells), or a half-cell
+    # offset slices each tile into a thin sliver that OCRs as 'I'. Two royal-blue
+    # tiles placed in the middle of a 7-cell band must yield exactly 2 detections
+    # near their real centres.
+    cells = [[78 + i * 132, 1997, 132, 119] for i in range(7)]
+    img = np.full((2404, 1080, 3), 250, dtype=np.uint8)        # cream background
+    centers = []
+    for k in range(2):
+        x = 400 + k * 140                                       # centred, off-grid
+        img[2010:2105, x:x + 110] = [70, 95, 180]              # royal-blue tile
+        centers.append(x + 55)
+    letters, positions = _detect_rack_tiles(img, cells)
+    assert len(positions) == 2
+    xs = sorted(p[0] for p in positions)
+    for got, want in zip(xs, centers):
+        assert abs(got - want) <= 20
 
 
 def _fill(rgb):

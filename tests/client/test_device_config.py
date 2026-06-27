@@ -32,6 +32,18 @@ def test_save_then_load_roundtrip(tmp_path):
     assert loaded.submit == (10, 20)
 
 
+def test_platform_roundtrip_and_preserved_on_blank_save(tmp_path):
+    # The platform ("android"/"ios") persists and round-trips.
+    path = str(tmp_path / "cal.json")
+    DeviceConfig(platform="android", pixel_scale=1).save(path)
+    assert DeviceConfig.load(path).platform == "android"
+
+    # A later save that omits platform (default "") must NOT wipe the stored value.
+    DeviceConfig(pixel_scale=2).save(path)
+    reloaded = DeviceConfig.load(path)
+    assert reloaded.platform == "android" and reloaded.pixel_scale == 2
+
+
 def test_device_save_preserves_board_geometry(tmp_path):
     path = str(tmp_path / "cal.json")
     Calibration(board_x=27, board_y=800, board_width=1158, board_height=1150).save(path)

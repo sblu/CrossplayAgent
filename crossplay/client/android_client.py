@@ -27,7 +27,7 @@ from crossplay.automation.android_driver import AndroidDriver
 from crossplay.automation.input import tap, drag_and_drop
 from crossplay.automation.screenshot import capture_screenshot
 from crossplay.vision.calibration import Calibration
-from crossplay.vision.android_vision import parse_board_and_rack
+from crossplay.vision.android_vision import find_modal_close, parse_board_and_rack
 
 CAL_PATH = "data/calibration/calibration.json"
 
@@ -76,8 +76,29 @@ class AndroidClient(CrossplayClient):
         except Exception:
             pass
 
+    def _dismiss_blocking_dialogs(self, max_rounds: int = 3) -> bool:
+        """Close any modal popup overlaying the board before reading/playing.
+
+        The end-game "This is your Last Turn" card (and similar coach-marks) dim
+        the board and block taps; left up, the board reads as empty and the bot
+        wrongly concludes the game is over. Detect the card and tap its close (X),
+        looping to clear stacked dialogs. Returns True if anything was dismissed.
+        """
+        dismissed = False
+        for _ in range(max_rounds):
+            img = capture_screenshot(self._session)
+            target = find_modal_close(img)
+            if target is None:
+                break
+            print(f"  [i] dismissing modal dialog (close at {target[0]},{target[1]})")
+            tap(self._session, *target)
+            dismissed = True
+            time.sleep(0.9)
+        return dismissed
+
     def _read(self):
         """Zoom to full board, screenshot, OCR → (board, rack, rack_positions)."""
+        self._dismiss_blocking_dialogs()
         self._zoom_out()
         img = capture_screenshot(self._session)
         return parse_board_and_rack(img, self._cal, self._dev.rack_cells)
@@ -139,6 +160,9 @@ class AndroidClient(CrossplayClient):
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
+                # A modal (e.g. the end-game "Last Turn" card) dims the screen and
+                # hides the Play button, so clear it before reading turn state.
+                self._dismiss_blocking_dialogs()
                 if self._is_our_turn():
                     print(" our turn.")
                     return True
@@ -216,6 +240,7 @@ class AndroidClient(CrossplayClient):
     # ── Move execution ─────────────────────────────────────────────────────────
 
     def _execute_move(self, move: dict) -> bool:
+        self._dismiss_blocking_dialogs()
         scale = self._dev.pixel_scale
         word = move["word"]
         row, col = move["row"], move["col"]
