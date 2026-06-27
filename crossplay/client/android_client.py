@@ -150,21 +150,23 @@ class AndroidClient(CrossplayClient):
         return False
 
     def observe(self) -> Observation:
-        # A completely empty read mid-game means a transient/zooming frame, not a
-        # real state (the board always has tiles after the opening). Retry rather
-        # than acting on it — this is what cascaded into a bad pass previously.
+        # Retry until we read a non-empty rack: an empty rack is either a transient
+        # frame (popup/zoom) or genuine end-game. Retrying absorbs the former; if it
+        # stays empty we treat it as game over (we've played out / bag empty) rather
+        # than spuriously passing into a stuck menu.
         for _ in range(3):
             board, rack_letters, rack_positions = self._read()
-            if any(any(row) for row in board) or any(rack_letters):
+            if any(rack_letters):
                 break
             time.sleep(1.5)
         self._rack_letters = rack_letters
         self._rack_positions = rack_positions
+        rack_empty = not any(rack_letters)
         return Observation(
             board=board,
             rack=rack_letters,
-            is_our_turn=self._is_our_turn(),
-            game_over=self._game_is_over(),
+            is_our_turn=self._is_our_turn() and not rack_empty,
+            game_over=self._game_is_over() or rack_empty,
         )
 
     def _recall(self) -> None:
@@ -200,9 +202,16 @@ class AndroidClient(CrossplayClient):
 
     def pass_turn(self) -> None:
         # Recall anything staged first so a stray pass doesn't strand tiles, then
-        # open More. TODO(device): tap the Pass row to actually pass.
+        # open More and tap Pass. Closes the menu again if Pass isn't calibrated.
         self._recall()
         tap(self._session, *self._dev.more)
+        time.sleep(1.0)
+        pass_btn = self._dev.buttons.get("pass")
+        if pass_btn:
+            tap(self._session, *pass_btn)
+            time.sleep(1.0)
+        else:
+            tap(self._session, *self._dev.more)   # no pass coord — close the menu
 
     # ── Move execution ─────────────────────────────────────────────────────────
 
