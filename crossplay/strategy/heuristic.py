@@ -19,7 +19,7 @@ with values learned from the self-play data that selfplay.py already logs.
 from crossplay.engine.board import Board
 from crossplay.engine.dictionary import Dictionary
 from crossplay.engine.move_generator import generate_moves
-from crossplay.strategy.base import Agent
+from crossplay.strategy.base import Agent, move_key
 
 # Relative weight of the rack leave vs. immediate points. 1.0 = a leave point is
 # worth a board point; tune via self-play on the leaderboard.
@@ -41,8 +41,11 @@ class HeuristicAgent(Agent):
         self._dictionary = dictionary
         self._leave_weight = leave_weight
 
-    def choose_move(self, board: Board, rack: list[str]) -> dict | None:
+    def choose_move(self, board: Board, rack: list[str],
+                    exclude: set | None = None) -> dict | None:
         moves = generate_moves(board, rack, self._dictionary)
+        if exclude:
+            moves = [m for m in moves if move_key(m) not in exclude]
         if not moves:
             return None
         # Evaluate each candidate; tie-break by raw score so behaviour is stable.

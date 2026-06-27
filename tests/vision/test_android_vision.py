@@ -31,6 +31,14 @@ def test_foot_shape_reads_as_L():
     assert _ocr_letter(crop) == "L"
 
 
+def test_blank_tile_reads_as_question():
+    # A blank rack tile has no letter, only a small mark — its biggest blob is
+    # short (<40% of tile height), so it must read '?' not a misread letter.
+    crop = _tile()
+    crop[8:22, 26:34] = 255          # small mark, height 14 of 60 (~0.23)
+    assert _ocr_letter(crop) == "?"
+
+
 def test_wide_top_not_forced_to_I():
     # A T (wide top bar + stem) must NOT be overridden to I — the thin-bar rule
     # only applies to genuinely narrow blobs. This is the I-misread-as-T guard's

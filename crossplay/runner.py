@@ -11,7 +11,7 @@ from pathlib import Path
 
 from crossplay.client.base import CrossplayClient
 from crossplay.engine.board import Board
-from crossplay.strategy.base import Agent
+from crossplay.strategy.base import Agent, move_key
 
 _STATE_PATH = Path("data/game_state.json")
 
@@ -51,6 +51,7 @@ def run(
             print("Connected. Starting game loop...")
         consecutive_timeouts = 0
         consecutive_failures = 0
+        failed_moves: set = set()   # moves the device rejected this turn
         moves_played = 0
 
         while True:
@@ -81,12 +82,13 @@ def run(
             board = Board()
             board.load_from_grid(obs.board)
             rack = [t for t in obs.rack if t]
-            move = agent.choose_move(board, rack)
+            move = agent.choose_move(board, rack, exclude=failed_moves)
 
             if move is None:
                 if verbose:
                     print("No valid moves — passing.")
                 client.pass_turn()
+                failed_moves = set()
                 if write_dashboard:
                     _write_dashboard(obs.board, obs.rack, {"action": "pass"})
             else:
@@ -98,7 +100,9 @@ def run(
                     _write_dashboard(obs.board, obs.rack, move if ok else {"action": "pass"})
                 if ok:
                     consecutive_failures = 0
+                    failed_moves = set()
                 else:
+                    failed_moves.add(move_key(move))   # don't re-pick this move
                     consecutive_failures += 1
                     if verbose:
                         print(f"Move execution failed ({consecutive_failures}/{max_failures}).")
@@ -106,7 +110,7 @@ def run(
                         if verbose:
                             print("Too many failed moves — exiting.")
                         break
-                    continue   # retry the turn (tiles recalled) without counting it
+                    continue   # retry the turn with the next-best move
 
             moves_played += 1
             if max_moves is not None and moves_played >= max_moves:

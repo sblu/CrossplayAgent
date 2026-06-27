@@ -39,6 +39,10 @@ def _ocr_letter(crop: np.ndarray) -> str:
         return '?'   # no letter (e.g. a blank tile)
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     _, _, w, h, _ = stats[largest]
+    # A real letter spans ~56% of the tile height; a blank tile has no letter, only
+    # a small mark/point-value (~27%). A short biggest-blob means a blank → '?'.
+    if h < 0.40 * crop.shape[0]:
+        return '?'
     aspect = w / max(1, h)
     letter = (labels == largest).astype(np.uint8) * 255
     img = Image.fromarray(255 - letter)
