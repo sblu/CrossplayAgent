@@ -47,6 +47,35 @@ def _bottom_bar_coverage(glyph: np.ndarray) -> float:
     return float((band.sum(axis=0) > 0).mean())
 
 
+def _top_right_inked(glyph: np.ndarray) -> float:
+    """Ink fraction in the glyph's top-right corner.
+
+    M is routinely misread as L — both have a tall left stroke — but they differ
+    in the top-right: an M fills both top corners (~1.0 here) while an L leaves its
+    top-right empty (~0.0). `glyph` is the binary (0/1) letter mask.
+    """
+    h, w = glyph.shape
+    if h == 0 or w == 0:
+        return 0.0
+    corner = glyph[:int(h * 0.30), int(w * 0.66):]
+    return float(corner.mean()) if corner.size else 0.0
+
+
+def _bottom_right_tail(glyph: np.ndarray) -> float:
+    """Bottom-right minus bottom-left corner ink — Q's tail vs O's symmetry.
+
+    Q is an O plus a tail that inks the bottom-right corner, breaking the ring's
+    left/right symmetry; a plain O leaves both bottom corners equal. Returns
+    BR-corner minus BL-corner ink: ~0 for O, distinctly positive (~0.12) for Q.
+    """
+    h, w = glyph.shape
+    if h == 0 or w == 0:
+        return 0.0
+    br = glyph[int(h * 0.66):, int(w * 0.66):].mean()
+    bl = glyph[int(h * 0.66):, :int(w * 0.34)].mean()
+    return float(br - bl)
+
+
 def _ocr_letter(crop: np.ndarray) -> str:
     # Keep only the largest white blob (the letter) and drop the small point-value
     # digit — far more robust than masking a fixed corner, which clipped P/B/L.
@@ -62,6 +91,7 @@ def _ocr_letter(crop: np.ndarray) -> str:
         return '?'
     aspect = w / max(1, h)
     blob = (labels == largest).astype(np.uint8)
+    glyph = blob[by:by + h, bx:bx + w]   # letter mask cropped to its bounding box
     img = Image.fromarray(255 - blob * 255)
     img = img.resize((max(1, img.width * 3), max(1, img.height * 3)))
 
@@ -79,11 +109,21 @@ def _ocr_letter(crop: np.ndarray) -> str:
     if aspect < 0.40:
         result = 'I'
     elif result in ('I', 'L'):
-        result = 'I' if aspect < 0.48 else 'L'
+        # Thin → I. Otherwise L, unless the top-right corner is inked: that's an
+        # M misread as L (M fills both top corners; L's top-right is empty).
+        if aspect < 0.48:
+            result = 'I'
+        elif _top_right_inked(glyph) > 0.4:
+            result = 'M'
+        else:
+            result = 'L'
+    # Q vs O: tesseract drops Q's tail and reads it as O. They differ only there,
+    # so decide by the bottom-right tail rather than trust the glyph.
+    elif result in ('O', 'Q'):
+        result = 'Q' if _bottom_right_tail(glyph) > 0.06 else 'O'
     # E vs F: tesseract routinely drops E's bottom stroke and reads it as F. They
     # differ only there, so decide by the bottom bar rather than trust the glyph.
     elif result in ('E', 'F'):
-        glyph = blob[by:by + h, bx:bx + w]
         result = 'E' if _bottom_bar_coverage(glyph) > 0.5 else 'F'
     return result
 

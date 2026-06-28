@@ -4,12 +4,13 @@ The full screenshot→letters path is validated live on the device; here we lock
 the colour discriminator that separates placed tiles from premium squares / empty
 cells, since that's the part that's pure logic and easy to regress.
 """
+import cv2
 import numpy as np
 
 from crossplay.vision import android_vision
 from crossplay.vision.android_vision import (
-    _bottom_bar_coverage, _detect_rack_tiles, _has_tile, _ocr_letter,
-    find_modal_close)
+    _bottom_bar_coverage, _bottom_right_tail, _detect_rack_tiles, _has_tile,
+    _ocr_letter, _top_right_inked, find_modal_close)
 
 
 def _tile(rgb=(70, 95, 180)):
@@ -133,6 +134,80 @@ def test_real_f_not_flipped_to_e(monkeypatch):
     monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
                         lambda *a, **k: "E")
     assert _ocr_letter(_ef_glyph(_tile(), bottom_bar=False)) == "F"
+
+
+def _m_glyph(crop):
+    """A white M on a blue tile: two full-height stems joined by a top bar (so both
+    top corners are inked) plus the middle V — the shape tesseract reads as 'L'."""
+    crop[8:52, 14:20] = 255          # left stem (full height)
+    crop[8:52, 40:46] = 255          # right stem (full height)
+    crop[8:14, 14:46] = 255          # top bar — fills both top corners
+    crop[14:32, 26:34] = 255         # middle V down-stroke
+    return crop
+
+
+def _oq_glyph(crop, *, tail):
+    """A white O ring (tail=False) or Q (ring + a bottom-right tail, tail=True)."""
+    cv2.ellipse(crop, (30, 30), (15, 20), 0, 0, 360, (255, 255, 255), 6)
+    if tail:
+        cv2.line(crop, (33, 33), (47, 51), (255, 255, 255), 5)   # bottom-right tail
+    return crop
+
+
+def test_top_right_inked_separates_m_from_l():
+    # Geometry: M fills the top-right corner; L leaves it empty.
+    m = np.all(_m_glyph(_tile()) > 150, axis=2).astype(np.uint8)
+    l = _tile()
+    l[8:52, 22:28] = 255             # vertical stroke
+    l[46:52, 22:44] = 255            # bottom foot
+    l = np.all(l > 150, axis=2).astype(np.uint8)
+    ys, xs = np.where(m); m = m[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    ys, xs = np.where(l); l = l[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    assert _top_right_inked(m) > 0.4 > _top_right_inked(l)
+
+
+def test_m_glyph_misread_as_l_is_corrected(monkeypatch):
+    # The reported bug: tesseract reads an M as 'L'. The top-right-corner check must
+    # override that back to 'M'.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "L")
+    assert _ocr_letter(_m_glyph(_tile())) == "M"
+
+
+def test_real_l_not_flipped_to_m(monkeypatch):
+    # Inverse guard: a genuine L (empty top-right) stays L even when tesseract says
+    # 'L', so the M override doesn't over-correct.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "L")
+    crop = _tile()
+    crop[8:52, 22:28] = 255
+    crop[46:52, 22:44] = 255
+    assert _ocr_letter(crop) == "L"
+
+
+def test_bottom_right_tail_separates_q_from_o():
+    # Geometry: Q's tail inks the bottom-right corner; O stays symmetric.
+    q = np.all(_oq_glyph(_tile(), tail=True) > 150, axis=2).astype(np.uint8)
+    o = np.all(_oq_glyph(_tile(), tail=False) > 150, axis=2).astype(np.uint8)
+    ys, xs = np.where(q); q = q[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    ys, xs = np.where(o); o = o[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    assert _bottom_right_tail(q) > 0.06 > _bottom_right_tail(o)
+
+
+def test_q_glyph_misread_as_o_is_corrected(monkeypatch):
+    # The reported bug: tesseract drops Q's tail and returns 'O'. The tail check
+    # must override that back to 'Q'.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "O")
+    assert _ocr_letter(_oq_glyph(_tile(), tail=True)) == "Q"
+
+
+def test_real_o_not_flipped_to_q(monkeypatch):
+    # Inverse guard: a genuine O (symmetric ring) stays O even when tesseract says
+    # 'O', so the Q override doesn't over-correct.
+    monkeypatch.setattr(android_vision.pytesseract, "image_to_string",
+                        lambda *a, **k: "O")
+    assert _ocr_letter(_oq_glyph(_tile(), tail=False)) == "O"
 
 
 def _fill(rgb):
