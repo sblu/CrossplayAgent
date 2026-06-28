@@ -132,6 +132,10 @@ def _check_device_connection():
     Mirrors what AndroidDriver needs: an adb-visible device (matching the
     configured UDID, if any) and a reachable Appium server.
     """
+    if not Path(CAL_FILE).exists():
+        return False, ("No calibration found at " + CAL_FILE +
+                       " — set one up on /device-setup (this file is per-device "
+                       "and git-ignored, so it never ships with the repo).")
     adb = _adb_path()
     if not adb:
         return False, "adb not found (install Android platform-tools / set ANDROID_HOME)."
@@ -1286,6 +1290,7 @@ def main():
             if not ok:
                 return jsonify({"ok": False, "running": False, "error": reason,
                                 "help": [
+                                    "Calibrate the device on /device-setup (creates calibration.json).",
                                     "Connect the phone over USB.",
                                     "Enable Developer Options and turn on USB debugging.",
                                     "Accept the 'Allow USB debugging' prompt on the phone.",
