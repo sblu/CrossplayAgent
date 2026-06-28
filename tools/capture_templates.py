@@ -14,6 +14,8 @@ Usage tip: put unusual letters (Q, X, Z, J) on your rack if possible.
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import json
+
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
@@ -25,15 +27,18 @@ from crossplay.vision.tile_detector import _to_canonical
 
 load_dotenv()
 
-RACK_CELLS = [
-    (12,   2133, 156, 157),
-    (183,  2133, 156, 157),
-    (353,  2133, 157, 157),
-    (524,  2133, 157, 157),
-    (695,  2133, 157, 157),
-    (866,  2133, 156, 157),
-    (1037, 2133, 156, 157),
-]
+CAL_PATH = "data/calibration/calibration.json"
+
+
+def _load_rack_cells(path: str = CAL_PATH) -> list[tuple[int, int, int, int]]:
+    """Rack slot boxes come from the per-device calibration — the SAME geometry
+    detect_letter uses at runtime — so captured templates register against live
+    frames. (Previously these were hardcoded and drifted out of sync per device.)"""
+    cells = json.loads(open(path).read_text())["rack_cells"]
+    return [tuple(c) for c in cells]
+
+
+RACK_CELLS = _load_rack_cells()
 
 TEMPLATE_DIR = "data/templates"
 os.makedirs(TEMPLATE_DIR, exist_ok=True)

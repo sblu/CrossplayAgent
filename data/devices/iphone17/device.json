@@ -1,0 +1,6 @@
+{
+  "name": "iPhone 17 (Owen)",
+  "platform": "ios",
+  "pixel_scale": 3,
+  "notes": "Owen's original iOS profile. Board read via the accessibility tree; letter templates are the repo's original iPhone-rendered set. Board geometry recovered from the first commit; rack_cells/buttons are the iOS @3x defaults — recalibrate on /device-setup if tiles don't line up on your unit."
+}

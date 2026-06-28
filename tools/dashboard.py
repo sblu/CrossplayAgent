@@ -28,6 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from flask import Flask, jsonify, render_template_string, request
 
 from crossplay.client.device_config import DeviceConfig
+from crossplay.client import device_profiles
 from crossplay.engine.board import LETTER_VALUES
 from crossplay.strategy.agent_config import AGENT_CONFIG_PATH, load_agent_configs
 from crossplay.engine.dictionary import Dictionary
@@ -300,6 +301,8 @@ board, rack and buttons. Saves to <code>data/calibration/calibration.json</code>
 no live device needed.</p>
 
 <div class="controls">
+  <label>device <select id="devSel"><option>loading…</option></select></label>
+  <span id="devMsg" style="color:#2faa6a;font-size:.82rem"></span>
   <input type="file" id="file" accept="image/*">
   <span class="mode" data-mode="board">1 · Board box</span>
   <span class="mode" data-mode="rack">2 · Rack row →7</span>
@@ -424,6 +427,27 @@ function setStatus(msg, err){ const s = document.getElementById("status");
 // Prefill numeric scale from any existing config.
 fetch("/device-config").then(r => r.json()).then(d => {
   if (d.pixel_scale) document.getElementById("scale").value = d.pixel_scale;
+}).catch(()=>{});
+
+// Device-profile picker: choose a saved phone as a starting point. Activating
+// copies its calibration + templates into the working dirs; reload so the marks
+// and pixel-scale prefill reflect the newly-active profile.
+fetch("/device-profiles").then(r => r.json()).then(d => {
+  const sel = document.getElementById("devSel");
+  const profs = d.profiles || [];
+  sel.innerHTML = profs.length
+    ? profs.map(p => `<option value="${p.slug}"${p.slug === d.active ? " selected" : ""}>` +
+        `${p.name}${p.platform ? " (" + p.platform + ")" : ""}</option>`).join("")
+    : `<option value="">(no profiles)</option>`;
+  sel.addEventListener("change", () => {
+    const msg = document.getElementById("devMsg");
+    msg.style.color = "#2faa6a"; msg.textContent = "activating…";
+    fetch("/device-activate", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({slug: sel.value}) }).then(r => r.json()).then(res => {
+      if (res.ok) { location.reload(); }
+      else { msg.style.color = "#9a2b22"; msg.textContent = res.error || "failed"; }
+    }).catch(() => { msg.style.color = "#9a2b22"; msg.textContent = "failed"; });
+  });
 }).catch(()=>{});
 </script>
 </div></body></html>"""
@@ -754,6 +778,12 @@ function renderConfig(c) {
   body.innerHTML =
     `Stored in <span class="file">${c.path}</span>` +
     `<table>` +
+    `<tr><td class="k">device</td><td>` +
+      `<select id="devSel"><option>loading…</option></select> ` +
+      `<span id="devMsg" style="color:#2faa6a"></span>` +
+      `<div class="algo-desc" id="devNote"></div>` +
+      `<div class="algo-file">profiles in ` +
+      `<span class="file">data/devices/</span></div></td></tr>` +
     `<tr><td class="k">platform</td><td><code>${plat}</code>` +
       `<span style="color:#999">${platNote}</span></td></tr>` +
     `<tr><td class="k">algorithm</td><td>` +
@@ -782,6 +812,37 @@ function renderConfig(c) {
       algoMsg.textContent = d.ok ? "saved · applies on next Start" : (d.error || "failed");
     }).catch(() => { algoMsg.style.color = "#9a2b22"; algoMsg.textContent = "failed"; });
   });
+  loadProfiles();
+}
+// Populate the device-profile dropdown and switch the active profile on change.
+// Activating copies that device's calibration + templates into the working dirs,
+// so we re-render the config afterwards to show the new geometry.
+function loadProfiles() {
+  const sel = document.getElementById("devSel");
+  if (!sel) return;
+  fetch("/device-profiles").then(r => r.json()).then(d => {
+    const profs = d.profiles || [];
+    sel.innerHTML = profs.length
+      ? profs.map(p => `<option value="${p.slug}"${p.slug === d.active ? " selected" : ""}>` +
+          `${p.name}${p.platform ? " (" + p.platform + ")" : ""}</option>`).join("")
+      : `<option value="">(no profiles in data/devices/)</option>`;
+    const noteOf = slug => (profs.find(p => p.slug === slug) || {}).notes || "";
+    const devNote = document.getElementById("devNote");
+    if (devNote) devNote.textContent = noteOf(sel.value);
+    sel.addEventListener("change", () => {
+      const devMsg = document.getElementById("devMsg");
+      if (devNote) devNote.textContent = noteOf(sel.value);
+      devMsg.style.color = "#2faa6a"; devMsg.textContent = "activating…";
+      fetch("/device-activate", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({slug: sel.value})
+      }).then(r => r.json()).then(res => {
+        devMsg.style.color = res.ok ? "#2faa6a" : "#9a2b22";
+        devMsg.textContent = res.ok ? "activated · applies on next Start" : (res.error || "failed");
+        if (res.ok) fetch("/device-config").then(r => r.json()).then(renderConfig);
+      }).catch(() => { devMsg.style.color = "#9a2b22"; devMsg.textContent = "failed"; });
+    });
+  }).catch(() => {});
 }
 fetch("/device-config").then(r => r.json()).then(renderConfig)
   .catch(() => { document.getElementById("cfgbody").textContent = "Failed to load config."; });
@@ -1272,6 +1333,33 @@ def main():
         dev.save(CAL_FILE)
         return jsonify({"ok": True, "algorithm": name,
                         "note": "Applies on the next Start."})
+
+    @app.route("/device-profiles", methods=["GET"])
+    def get_device_profiles():
+        return jsonify({"profiles": device_profiles.list_profiles(),
+                        "active": device_profiles.active_slug()})
+
+    @app.route("/device-activate", methods=["POST"])
+    def activate_device_profile():
+        slug = (request.json or {}).get("slug", "")
+        try:
+            summary = device_profiles.activate_profile(slug)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "summary": summary,
+                        "note": "Calibration + templates applied. Applies on next Start."})
+
+    @app.route("/device-save-profile", methods=["POST"])
+    def save_device_profile():
+        d = request.json or {}
+        slug = d.get("slug", "")
+        try:
+            summary = device_profiles.save_active_as_profile(
+                slug, name=d.get("name", ""), notes=d.get("notes", ""))
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "summary": summary,
+                        "note": f"Saved to data/devices/{slug}/ — git add to commit it."})
 
     @app.route("/device-control", methods=["GET"])
     def device_control_status():

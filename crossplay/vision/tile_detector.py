@@ -48,6 +48,12 @@ def _get_board_templates() -> dict[str, np.ndarray]:
     return _board_templates
 
 
+def reload_templates() -> None:
+    """Force reload of rack templates from disk (e.g. after switching device profile)."""
+    global _templates
+    _templates = None
+
+
 def reload_board_templates() -> None:
     """Force reload of board templates from disk (call after saving new templates)."""
     global _board_templates

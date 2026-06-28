@@ -52,6 +52,11 @@ data/calibration/calibration_overlay.png
 data/calibration/button_row.png
 data/calibration/rack_region.png
 
+# Active letter templates are a working copy of the selected device profile
+# (the tracked library lives in data/devices/<slug>/). Switch with /device-setup.
+data/templates/
+data/board_templates/
+
 # Android working/debug screenshots (device-specific captures)
 data/calibration/android_*.png
 

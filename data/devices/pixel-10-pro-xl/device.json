@@ -1,0 +1,6 @@
+{
+  "name": "Pixel 10 Pro XL",
+  "platform": "android",
+  "pixel_scale": 1,
+  "notes": "Android profile (1080x2404). Board + rack read by OCR, so no letter templates are needed. Calibration covers board geometry, rack cells, and tap targets (submit/more/keepalive/recall/pass)."
+}
