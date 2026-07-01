@@ -161,3 +161,37 @@ was literally designed for noisy game-program parameter tuning.
 **Caveat:** tuning happens against the simulator's opponents, so you optimize to beat
 *them* — the final arbiter is still the on-device live game (last validation step,
 per the dev-loop doc).
+
+### Follow-up — make the leaderboard Elo trustworthy
+
+Observed in practice: **heuristic showed a higher Elo (1853) than greedy (1755) despite
+a losing head-to-head record vs greedy (46.7% win rate over ~7.3k games).** That's not
+a bug — it exposes three properties of the current `crossplay/leaderboard.py` Elo worth
+fixing before we lean on it to promote tuned agents:
+
+1. **Elo ignores margin — it's pure W/L/tie.** `record_game()` sets `outcome ∈
+   {1.0, 0.5, 0.0}` from the score comparison only; the point gap feeds the displayed
+   `avg_margin` but never the rating. A 400-point blowout and a 1-point win move Elo
+   identically. Part 2's evaluator should score on **margin** (paired t-test), so
+   consider a margin-aware rating (e.g. Elo with a score-differential outcome, or fit
+   ratings from margins directly) if the leaderboard is to reflect strength, not just
+   win counts.
+2. **Rating inflation from farming weak opponents.** Greedy beat the `weak` bot 56–0,
+   which floated its rating to a ~2094 peak; it then bled down to 1755 over thousands of
+   near-even games vs heuristic (an over-rated player who only ties the field loses
+   points). Beating a far-weaker agent should barely move the rating (it already
+   nearly does), but the *pool composition* skews standings — reinforces the
+   **gauntlet/pool** point above, and argues for down-weighting or excluding lopsided
+   pairings.
+3. **Path dependence + high K = noisy ordering.** With `K=32`, a ~150-game hot streak
+   spiked heuristic +80. For a true 53/47 split the Elo equilibrium gap is only ~20
+   points, so the current ordering is **within noise** — the two are ~equal and the
+   lifetime win rate is the more stable estimate. Lower `K` (or an adaptive/decaying K),
+   and judge close pairs by a large fixed head-to-head batch (or SPRT) rather than the
+   live, jumpy Elo.
+
+**Concrete asks:** (a) lower/adaptive `K`; (b) optional margin-aware rating update;
+(c) guard against weak-opponent inflation in the pool; (d) surface a "confidence"
+/ games-played and a recent-vs-lifetime split in the leaderboard view so a streak
+isn't mistaken for a ranking. Small, self-contained changes to `leaderboard.py` +
+the dashboard leaderboard view.
